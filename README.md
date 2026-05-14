@@ -7,17 +7,22 @@ Built for reviewing HTML artifacts produced by coding agents — design docs, fe
 ## Quick start
 
 ```bash
-npm install
+# No install needed — run straight from npm
+npx html-comments /path/to/your/html
 
-# Point at your directory of HTML files
+# Or install globally
+npm install -g html-comments
+html-comments /path/to/your/html
+
+# Or clone + run from source
+git clone https://github.com/olson-eric/html-comments
+cd html-comments && npm install
 node server.js /path/to/your/html
-# …or
-HTML_DIR=/path/to/your/html npm start
-
-# Default if neither is given: ./html
 ```
 
 Then open `http://localhost:4747` and you'll see a file tree. Click an `.html` file to open it in the viewer, select text, and leave comments.
+
+Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, hashed by relative path). Override with `COMMENTS_DIR=…` if you want them somewhere else.
 
 ## How comments are anchored
 
@@ -78,6 +83,7 @@ curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec.h
 ## Configuration
 
 - `HTML_DIR` (or positional arg) — directory of HTML files to serve. Required to exist.
+- `COMMENTS_DIR` (default `<html-dir>/.html-comments`) — where comment JSON is persisted.
 - `PORT` (default `4747`)
 - `HOST` (default `0.0.0.0`)
 
