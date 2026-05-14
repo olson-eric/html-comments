@@ -17,7 +17,7 @@ HTML_DIR=/path/to/your/html npm start
 # Default if neither is given: ./html
 ```
 
-Then open `http://localhost:3000` and you'll see a file tree. Click an `.html` file to open it in the viewer, select text, and leave comments.
+Then open `http://localhost:4747` and you'll see a file tree. Click an `.html` file to open it in the viewer, select text, and leave comments.
 
 ## How comments are anchored
 
@@ -57,20 +57,20 @@ Files are identified by their path relative to the HTML root, passed as `?path=f
 
 ```bash
 # 1. Find files with open comments
-curl -s http://localhost:3000/api/tree | jq '..|.path? // empty'
+curl -s http://localhost:4747/api/tree | jq '..|.path? // empty'
 
 # 2. Read open comments for a file
-curl -s "http://localhost:3000/api/file/comments?path=docs/spec.html&status=open" | jq
+curl -s "http://localhost:4747/api/file/comments?path=docs/spec.html&status=open" | jq
 
 # Each comment includes anchor.quote (the highlighted text), text (the comment),
 # author, createdAt, replies, resolved.
 
 # 3. After acting on a comment, reply + resolve:
-curl -s -X POST "http://localhost:3000/api/file/comments/<cid>/replies?path=docs/spec.html" \
+curl -s -X POST "http://localhost:4747/api/file/comments/<cid>/replies?path=docs/spec.html" \
   -H 'Content-Type: application/json' \
   -d '{"text":"Fixed in commit abc123","author":"agent"}'
 
-curl -s -X PATCH "http://localhost:3000/api/file/comments/<cid>?path=docs/spec.html" \
+curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec.html" \
   -H 'Content-Type: application/json' \
   -d '{"resolved":true}'
 ```
@@ -78,7 +78,7 @@ curl -s -X PATCH "http://localhost:3000/api/file/comments/<cid>?path=docs/spec.h
 ## Configuration
 
 - `HTML_DIR` (or positional arg) — directory of HTML files to serve. Required to exist.
-- `PORT` (default `3000`)
+- `PORT` (default `4747`)
 - `HOST` (default `0.0.0.0`)
 
 ## Security notes

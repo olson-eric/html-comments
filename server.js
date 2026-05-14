@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4747;
 const HOST = process.env.HOST || '0.0.0.0';
 const ROOT = path.resolve(process.argv[2] || process.env.HTML_DIR || path.join(__dirname, 'html'));
 const COMMENTS_DIR = path.join(__dirname, 'data', 'comments');
