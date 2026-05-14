@@ -91,4 +91,4 @@ curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec.h
 
 Pages render inside an `<iframe sandbox="allow-same-origin allow-scripts allow-popups allow-forms">`. Scripts in the rendered HTML can run; only host pages you trust. There is no authentication — put it behind your dev-server's auth (basic auth, Tailscale, etc.) if you want to share with coworkers over the public internet.
 
-Paths are validated to stay within the configured HTML root, and only `.html`/`.htm` files are served.
+Paths are validated to stay within the configured HTML root. The API only serves `.html`/`.htm` files; sibling assets (images, CSS, etc.) referenced by relative URLs in the HTML are served from `/raw/<path>` under the same root, with the same traversal protection. The `.html-comments` directory is never exposed via `/raw/`.

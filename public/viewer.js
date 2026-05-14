@@ -42,14 +42,12 @@ async function bootstrap() {
   if (pathEl) pathEl.textContent = state.meta.path;
   document.title = `${state.meta.title} — html-comments`;
 
-  const htmlRes = await fetch(`/api/file/html${apiQS}`);
-  const html = await htmlRes.text();
-  frame.srcdoc = html;
   frame.addEventListener('load', () => {
     injectFrameHooks();
     renderHighlights();
     renderSidebar();
   });
+  frame.src = `/raw/${state.meta.path.split('/').map(encodeURIComponent).join('/')}`;
 }
 
 function injectFrameHooks() {

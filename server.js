@@ -52,6 +52,18 @@ function resolveFile(relPath) {
   return { abs, rel: norm };
 }
 
+function resolveAsset(relPath) {
+  if (typeof relPath !== 'string' || !relPath) return null;
+  if (path.isAbsolute(relPath)) return null;
+  const norm = path.posix.normalize(relPath.replace(/\\/g, '/'));
+  if (norm.startsWith('..') || norm.includes('/../')) return null;
+  if (norm.split('/').some((seg) => seg === '.html-comments')) return null;
+  const abs = path.resolve(ROOT, norm);
+  if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) return null;
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
+  return { abs, rel: norm };
+}
+
 function buildTree(absDir, relDir = '') {
   let entries;
   try {
@@ -221,6 +233,18 @@ app.delete('/api/file/comments/:cid', (req, res) => {
   data.comments.splice(idx, 1);
   writeComments(f.rel, data);
   res.json({ ok: true });
+});
+
+app.get(/^\/raw\/(.+)$/, (req, res) => {
+  let rel;
+  try {
+    rel = decodeURIComponent(req.params[0]);
+  } catch {
+    return res.status(400).send('bad request');
+  }
+  const f = resolveAsset(rel);
+  if (!f) return res.status(404).send('not found');
+  res.sendFile(f.abs);
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
