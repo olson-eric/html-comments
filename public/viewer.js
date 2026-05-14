@@ -1,4 +1,5 @@
-const pageId = location.pathname.split('/').pop();
+const filePath = new URLSearchParams(location.search).get('path') || '';
+const apiQS = `?path=${encodeURIComponent(filePath)}`;
 const frame = document.getElementById('page-frame');
 const commentsList = document.getElementById('comments-list');
 const filterSelect = document.getElementById('filter');
@@ -25,17 +26,23 @@ filterSelect.addEventListener('change', renderSidebar);
 bootstrap();
 
 async function bootstrap() {
-  const res = await fetch(`/api/pages/${pageId}`);
+  if (!filePath) {
+    document.body.innerHTML = '<p style="padding:2rem">Missing ?path= parameter.</p>';
+    return;
+  }
+  const res = await fetch(`/api/file${apiQS}`);
   if (!res.ok) {
-    document.body.innerHTML = '<p style="padding:2rem">Page not found.</p>';
+    document.body.innerHTML = '<p style="padding:2rem">File not found.</p>';
     return;
   }
   state.meta = await res.json();
   state.comments = state.meta.comments || [];
   document.getElementById('page-title').textContent = state.meta.title;
+  const pathEl = document.getElementById('page-path');
+  if (pathEl) pathEl.textContent = state.meta.path;
   document.title = `${state.meta.title} — html-comments`;
 
-  const htmlRes = await fetch(`/api/pages/${pageId}/html`);
+  const htmlRes = await fetch(`/api/file/html${apiQS}`);
   const html = await htmlRes.text();
   frame.srcdoc = html;
   frame.addEventListener('load', () => {
@@ -126,7 +133,7 @@ function openComposerForNewComment(anchor) {
 }
 
 async function createComment(anchor, text) {
-  const res = await fetch(`/api/pages/${pageId}/comments`, {
+  const res = await fetch(`/api/file/comments${apiQS}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ anchor, text, author: authorInput.value || 'Anonymous' }),
@@ -143,7 +150,7 @@ async function createComment(anchor, text) {
 }
 
 async function addReply(commentId, text) {
-  const res = await fetch(`/api/pages/${pageId}/comments/${commentId}/replies`, {
+  const res = await fetch(`/api/file/comments/${commentId}/replies${apiQS}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, author: authorInput.value || 'Anonymous' }),
@@ -159,7 +166,7 @@ async function addReply(commentId, text) {
 }
 
 async function setResolved(commentId, resolved) {
-  const res = await fetch(`/api/pages/${pageId}/comments/${commentId}`, {
+  const res = await fetch(`/api/file/comments/${commentId}${apiQS}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ resolved }),
@@ -174,7 +181,7 @@ async function setResolved(commentId, resolved) {
 
 async function deleteComment(commentId) {
   if (!confirm('Delete this comment thread?')) return;
-  const res = await fetch(`/api/pages/${pageId}/comments/${commentId}`, { method: 'DELETE' });
+  const res = await fetch(`/api/file/comments/${commentId}${apiQS}`, { method: 'DELETE' });
   if (!res.ok) return;
   state.comments = state.comments.filter((c) => c.id !== commentId);
   renderHighlights();

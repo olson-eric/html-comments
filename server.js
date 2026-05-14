@@ -1,5 +1,4 @@
 const express = require('express');
-const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -7,35 +6,83 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
-const DATA_DIR = path.join(__dirname, 'data', 'pages');
+const ROOT = path.resolve(process.argv[2] || process.env.HTML_DIR || path.join(__dirname, 'html'));
+const COMMENTS_DIR = path.join(__dirname, 'data', 'comments');
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!fs.existsSync(ROOT) || !fs.statSync(ROOT).isDirectory()) {
+  console.error(`html-comments: HTML directory does not exist: ${ROOT}`);
+  console.error(`Usage: node server.js [<html-dir>]   (or set HTML_DIR=...)`);
+  process.exit(1);
+}
+fs.mkdirSync(COMMENTS_DIR, { recursive: true });
 
-app.use(express.json({ limit: '20mb' }));
-app.use(express.urlencoded({ extended: true, limit: '20mb' }));
-
-const upload = multer({ limits: { fileSize: 20 * 1024 * 1024 } });
+app.use(express.json({ limit: '5mb' }));
 
 const newId = () => crypto.randomBytes(6).toString('hex');
-const pageDir = (id) => path.join(DATA_DIR, id);
-const metaPath = (id) => path.join(pageDir(id), 'meta.json');
-const htmlPath = (id) => path.join(pageDir(id), 'content.html');
 
-const pageExists = (id) => /^[a-f0-9]{6,32}$/.test(id) && fs.existsSync(metaPath(id));
-const readMeta = (id) => JSON.parse(fs.readFileSync(metaPath(id), 'utf8'));
-const writeMeta = (id, meta) => fs.writeFileSync(metaPath(id), JSON.stringify(meta, null, 2));
+function resolveFile(relPath) {
+  if (typeof relPath !== 'string' || !relPath) return null;
+  if (path.isAbsolute(relPath)) return null;
+  const norm = path.posix.normalize(relPath.replace(/\\/g, '/'));
+  if (norm.startsWith('..') || norm.includes('/../')) return null;
+  const abs = path.resolve(ROOT, norm);
+  if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) return null;
+  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
+  if (!/\.html?$/i.test(abs)) return null;
+  return { abs, rel: norm };
+}
 
-function createPage({ html, title }) {
-  const id = newId();
-  fs.mkdirSync(pageDir(id), { recursive: true });
-  fs.writeFileSync(htmlPath(id), html);
-  writeMeta(id, {
-    id,
-    title: title || extractTitle(html) || 'Untitled',
-    createdAt: new Date().toISOString(),
-    comments: [],
+function buildTree(absDir, relDir = '') {
+  let entries;
+  try {
+    entries = fs.readdirSync(absDir, { withFileTypes: true });
+  } catch (e) {
+    return { name: path.basename(absDir) || 'root', path: relDir, type: 'dir', children: [] };
+  }
+  const children = [];
+  for (const e of entries) {
+    if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+    const childRel = relDir ? `${relDir}/${e.name}` : e.name;
+    const childAbs = path.join(absDir, e.name);
+    if (e.isDirectory()) {
+      const sub = buildTree(childAbs, childRel);
+      if (sub.children.length) children.push(sub);
+    } else if (e.isFile() && /\.html?$/i.test(e.name)) {
+      const data = readComments(childRel);
+      const open = data.comments.filter((c) => !c.resolved).length;
+      children.push({
+        name: e.name,
+        path: childRel,
+        type: 'file',
+        commentCount: data.comments.length,
+        openCount: open,
+      });
+    }
+  }
+  children.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    return a.name.localeCompare(b.name);
   });
-  return id;
+  return { name: path.basename(absDir) || path.basename(ROOT), path: relDir, type: 'dir', children };
+}
+
+function commentsFile(relPath) {
+  const hash = crypto.createHash('sha1').update(relPath).digest('hex');
+  return path.join(COMMENTS_DIR, `${hash}.json`);
+}
+
+function readComments(relPath) {
+  const f = commentsFile(relPath);
+  if (!fs.existsSync(f)) return { path: relPath, comments: [] };
+  try {
+    return JSON.parse(fs.readFileSync(f, 'utf8'));
+  } catch {
+    return { path: relPath, comments: [] };
+  }
+}
+
+function writeComments(relPath, data) {
+  fs.writeFileSync(commentsFile(relPath), JSON.stringify({ ...data, path: relPath }, null, 2));
 }
 
 function extractTitle(html) {
@@ -43,67 +90,57 @@ function extractTitle(html) {
   return m ? m[1].trim() : null;
 }
 
-app.post('/api/pages', upload.single('file'), (req, res) => {
-  let html = req.body && req.body.html;
-  const title = req.body && req.body.title;
-  if (!html && req.file) html = req.file.buffer.toString('utf8');
-  if (!html) return res.status(400).json({ error: 'html (string) or file upload required' });
-  const id = createPage({ html, title });
-  res.json({ id, viewerUrl: `/p/${id}` });
+app.get('/api/root', (_req, res) => {
+  res.json({ root: ROOT, name: path.basename(ROOT) });
 });
 
-app.get('/api/pages', (req, res) => {
-  const ids = fs.readdirSync(DATA_DIR).filter((id) => pageExists(id));
-  const pages = ids
-    .map((id) => {
-      const m = readMeta(id);
-      return {
-        id: m.id,
-        title: m.title,
-        createdAt: m.createdAt,
-        commentCount: m.comments.length,
-        openCount: m.comments.filter((c) => !c.resolved).length,
-      };
-    })
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  res.json({ pages });
+app.get('/api/tree', (_req, res) => {
+  res.json(buildTree(ROOT));
 });
 
-app.get('/api/pages/:id', (req, res) => {
-  if (!pageExists(req.params.id)) return res.status(404).json({ error: 'not found' });
-  res.json(readMeta(req.params.id));
+app.get('/api/file', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  const html = fs.readFileSync(f.abs, 'utf8');
+  const stat = fs.statSync(f.abs);
+  const data = readComments(f.rel);
+  res.json({
+    path: f.rel,
+    name: path.basename(f.abs),
+    title: extractTitle(html) || path.basename(f.abs),
+    size: stat.size,
+    modifiedAt: stat.mtime.toISOString(),
+    comments: data.comments,
+  });
 });
 
-app.delete('/api/pages/:id', (req, res) => {
-  if (!pageExists(req.params.id)) return res.status(404).json({ error: 'not found' });
-  fs.rmSync(pageDir(req.params.id), { recursive: true, force: true });
-  res.json({ ok: true });
+app.get('/api/file/html', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).send('not found');
+  res.type('text/html; charset=utf-8').send(fs.readFileSync(f.abs, 'utf8'));
 });
 
-app.get('/api/pages/:id/html', (req, res) => {
-  if (!pageExists(req.params.id)) return res.status(404).send('not found');
-  res.type('text/html; charset=utf-8').send(fs.readFileSync(htmlPath(req.params.id), 'utf8'));
-});
-
-app.get('/api/pages/:id/comments', (req, res) => {
-  if (!pageExists(req.params.id)) return res.status(404).json({ error: 'not found' });
-  const meta = readMeta(req.params.id);
+app.get('/api/file/comments', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  const data = readComments(f.rel);
+  let comments = data.comments;
   const status = req.query.status;
-  let comments = meta.comments;
   if (status === 'open') comments = comments.filter((c) => !c.resolved);
   if (status === 'resolved') comments = comments.filter((c) => c.resolved);
-  res.json({ comments });
+  res.json({ path: f.rel, comments });
 });
 
-app.post('/api/pages/:id/comments', (req, res) => {
-  if (!pageExists(req.params.id)) return res.status(404).json({ error: 'not found' });
+app.post('/api/file/comments', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
   const { anchor, text, author } = req.body || {};
   if (!anchor || typeof anchor !== 'object') return res.status(400).json({ error: 'anchor required' });
   if (typeof anchor.startIdx !== 'number' || typeof anchor.length !== 'number') {
     return res.status(400).json({ error: 'anchor must have startIdx and length' });
   }
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
-  const meta = readMeta(req.params.id);
+  const data = readComments(f.rel);
   const comment = {
     id: newId(),
     anchor: {
@@ -119,17 +156,18 @@ app.post('/api/pages/:id/comments', (req, res) => {
     createdAt: new Date().toISOString(),
     replies: [],
   };
-  meta.comments.push(comment);
-  writeMeta(req.params.id, meta);
+  data.comments.push(comment);
+  writeComments(f.rel, data);
   res.json(comment);
 });
 
-app.post('/api/pages/:id/comments/:cid/replies', (req, res) => {
-  if (!pageExists(req.params.id)) return res.status(404).json({ error: 'not found' });
+app.post('/api/file/comments/:cid/replies', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
   const { text, author } = req.body || {};
   if (!text) return res.status(400).json({ error: 'text required' });
-  const meta = readMeta(req.params.id);
-  const comment = meta.comments.find((c) => c.id === req.params.cid);
+  const data = readComments(f.rel);
+  const comment = data.comments.find((c) => c.id === req.params.cid);
   if (!comment) return res.status(404).json({ error: 'comment not found' });
   const reply = {
     id: newId(),
@@ -138,42 +176,46 @@ app.post('/api/pages/:id/comments/:cid/replies', (req, res) => {
     createdAt: new Date().toISOString(),
   };
   comment.replies.push(reply);
-  writeMeta(req.params.id, meta);
+  writeComments(f.rel, data);
   res.json(reply);
 });
 
-app.patch('/api/pages/:id/comments/:cid', (req, res) => {
-  if (!pageExists(req.params.id)) return res.status(404).json({ error: 'not found' });
-  const meta = readMeta(req.params.id);
-  const comment = meta.comments.find((c) => c.id === req.params.cid);
+app.patch('/api/file/comments/:cid', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  const data = readComments(f.rel);
+  const comment = data.comments.find((c) => c.id === req.params.cid);
   if (!comment) return res.status(404).json({ error: 'comment not found' });
   if (typeof req.body.resolved === 'boolean') comment.resolved = req.body.resolved;
   if (typeof req.body.text === 'string') comment.text = req.body.text;
-  writeMeta(req.params.id, meta);
+  writeComments(f.rel, data);
   res.json(comment);
 });
 
-app.delete('/api/pages/:id/comments/:cid', (req, res) => {
-  if (!pageExists(req.params.id)) return res.status(404).json({ error: 'not found' });
-  const meta = readMeta(req.params.id);
-  const idx = meta.comments.findIndex((c) => c.id === req.params.cid);
+app.delete('/api/file/comments/:cid', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  const data = readComments(f.rel);
+  const idx = data.comments.findIndex((c) => c.id === req.params.cid);
   if (idx === -1) return res.status(404).json({ error: 'comment not found' });
-  meta.comments.splice(idx, 1);
-  writeMeta(req.params.id, meta);
+  data.comments.splice(idx, 1);
+  writeComments(f.rel, data);
   res.json({ ok: true });
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/p/:id', (req, res) => {
-  if (!pageExists(req.params.id)) return res.status(404).send('Page not found');
+app.get('/v', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).send('File not found');
   res.sendFile(path.join(__dirname, 'public', 'viewer.html'));
 });
 
-app.get('/', (req, res) => {
+app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.listen(PORT, HOST, () => {
-  console.log(`html-comments listening on http://${HOST}:${PORT}`);
+  console.log(`html-comments serving ${ROOT}`);
+  console.log(`→ http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
 });
