@@ -1,0 +1,14 @@
+{
+  "name": "html-comments",
+  "version": "0.1.0",
+  "description": "Render arbitrary HTML pages and leave inline comments on them, with an API for agents to read and reply.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^2.0.0"
+  }
+}

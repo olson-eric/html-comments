@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>html-comments — viewer</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="viewer">
+    <header class="viewer-header">
+      <a href="/" class="brand">html-comments</a>
+      <h1 id="page-title">…</h1>
+      <div class="viewer-actions">
+        <label class="author-input">
+          <span>You:</span>
+          <input type="text" id="author" placeholder="Your name" />
+        </label>
+        <button id="copy-link">Copy link</button>
+      </div>
+    </header>
+
+    <main class="viewer-main">
+      <section class="page-pane">
+        <iframe id="page-frame" sandbox="allow-same-origin allow-scripts allow-popups allow-forms"></iframe>
+        <div id="add-comment-popover" class="add-comment-popover" hidden>
+          <button id="start-comment">💬 Add comment</button>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h2>Comments</h2>
+          <select id="filter">
+            <option value="open">Open</option>
+            <option value="all">All</option>
+            <option value="resolved">Resolved</option>
+          </select>
+        </div>
+        <div id="comments-list" class="comments-list"></div>
+        <template id="composer-template">
+          <div class="composer">
+            <div class="composer-quote"></div>
+            <textarea placeholder="Add a comment…" rows="3"></textarea>
+            <div class="composer-actions">
+              <button data-action="cancel" class="secondary">Cancel</button>
+              <button data-action="save">Comment</button>
+            </div>
+          </div>
+        </template>
+      </aside>
+    </main>
+
+    <script src="/viewer.js"></script>
+  </body>
+</html>

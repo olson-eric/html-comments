@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>html-comments</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="home">
+    <header class="home-header">
+      <h1>html-comments</h1>
+      <p>Render an HTML artifact, leave inline comments, share the link. Agents can read and reply via the API.</p>
+    </header>
+
+    <main class="home-main">
+      <section class="card">
+        <h2>New page</h2>
+        <form id="upload-form">
+          <label>
+            <span>Title (optional)</span>
+            <input type="text" name="title" placeholder="Design doc v3" />
+          </label>
+          <label>
+            <span>Upload an .html file</span>
+            <input type="file" name="file" accept=".html,.htm,text/html" />
+          </label>
+          <label>
+            <span>…or paste HTML</span>
+            <textarea name="html" rows="8" placeholder="<html>…</html>"></textarea>
+          </label>
+          <button type="submit">Create page</button>
+          <div id="upload-result" class="result"></div>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Pages</h2>
+        <ul id="pages-list" class="pages-list"></ul>
+      </section>
+
+      <section class="card">
+        <h2>Agent API</h2>
+        <p>Each page exposes a JSON API for agents to read and act on comments:</p>
+        <pre><code>GET    /api/pages
+GET    /api/pages/:id
+GET    /api/pages/:id/comments?status=open
+POST   /api/pages/:id/comments/:cid/replies   { text, author? }
+PATCH  /api/pages/:id/comments/:cid           { resolved: true }
+DELETE /api/pages/:id/comments/:cid</code></pre>
+      </section>
+    </main>
+
+    <script src="/index.js"></script>
+  </body>
+</html>
