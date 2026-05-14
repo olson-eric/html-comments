@@ -1,14 +1,44 @@
 {
   "name": "html-comments",
   "version": "0.1.0",
-  "description": "Render arbitrary HTML pages and leave inline comments on them, with an API for agents to read and reply.",
+  "description": "Render a directory of HTML files with Google-Docs-style inline comments. Comes with a JSON API for agents to read, reply, and resolve.",
   "main": "server.js",
+  "bin": {
+    "html-comments": "server.js"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
   },
+  "files": [
+    "server.js",
+    "public/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "html",
+    "comments",
+    "annotations",
+    "review",
+    "agents",
+    "ai",
+    "claude",
+    "inline-comments"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/olson-eric/html-comments.git"
+  },
+  "bugs": {
+    "url": "https://github.com/olson-eric/html-comments/issues"
+  },
+  "homepage": "https://github.com/olson-eric/html-comments#readme",
+  "license": "MIT",
   "dependencies": {
-    "express": "^4.19.2",
-    "multer": "^2.0.0"
+    "express": "^4.19.2"
   }
 }

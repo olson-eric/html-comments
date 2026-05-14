@@ -1,17 +1,37 @@
+#!/usr/bin/env node
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+const argv = process.argv.slice(2);
+if (argv.includes('--help') || argv.includes('-h')) {
+  console.log(`html-comments — render HTML files with inline comments
+
+Usage:
+  html-comments [<html-dir>]
+
+Options:
+  <html-dir>            Directory of .html files to serve (default: ./html)
+
+Environment:
+  HTML_DIR              Same as positional arg
+  COMMENTS_DIR          Where to persist comments (default: <html-dir>/.html-comments)
+  PORT                  Listen port (default: 4747)
+  HOST                  Listen host (default: 0.0.0.0)
+`);
+  process.exit(0);
+}
+
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4747;
 const HOST = process.env.HOST || '0.0.0.0';
-const ROOT = path.resolve(process.argv[2] || process.env.HTML_DIR || path.join(__dirname, 'html'));
-const COMMENTS_DIR = path.join(__dirname, 'data', 'comments');
+const ROOT = path.resolve(argv[0] || process.env.HTML_DIR || './html');
+const COMMENTS_DIR = path.resolve(process.env.COMMENTS_DIR || path.join(ROOT, '.html-comments'));
 
 if (!fs.existsSync(ROOT) || !fs.statSync(ROOT).isDirectory()) {
   console.error(`html-comments: HTML directory does not exist: ${ROOT}`);
-  console.error(`Usage: node server.js [<html-dir>]   (or set HTML_DIR=...)`);
+  console.error(`Usage: html-comments [<html-dir>]   (or set HTML_DIR=...)`);
   process.exit(1);
 }
 fs.mkdirSync(COMMENTS_DIR, { recursive: true });
