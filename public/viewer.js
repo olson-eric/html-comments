@@ -10,6 +10,13 @@ const authorInput = document.getElementById('author');
 authorInput.value = localStorage.getItem('hc:author') || '';
 authorInput.addEventListener('input', () => localStorage.setItem('hc:author', authorInput.value));
 
+const hideResolvedToggle = document.getElementById('hide-resolved');
+hideResolvedToggle.checked = localStorage.getItem('hc:hideResolved') === '1';
+hideResolvedToggle.addEventListener('change', () => {
+  localStorage.setItem('hc:hideResolved', hideResolvedToggle.checked ? '1' : '0');
+  renderHighlights();
+});
+
 let state = { meta: null, comments: [], pendingAnchor: null, activeCommentId: null };
 
 document.getElementById('copy-link').addEventListener('click', async () => {
@@ -244,8 +251,10 @@ function renderHighlights() {
   const doc = frame.contentDocument;
   if (!doc || !doc.body) return;
   clearHighlights();
+  const hideResolved = hideResolvedToggle.checked;
   const sorted = [...state.comments].sort((a, b) => a.anchor.startIdx - b.anchor.startIdx);
   for (const c of sorted) {
+    if (hideResolved && c.resolved) continue;
     applyHighlight(doc.body, c);
   }
 }

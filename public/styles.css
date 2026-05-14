@@ -190,13 +190,15 @@ body.viewer { height: 100vh; display: flex; flex-direction: column; overflow: hi
   text-overflow: ellipsis;
 }
 .viewer-actions { display: flex; align-items: center; gap: 0.5rem; }
-.author-input {
+.author-input,
+.toggle {
   display: flex;
   align-items: center;
   gap: 0.4rem;
   font-size: 0.85rem;
   color: var(--muted);
 }
+.toggle input { margin: 0; }
 .author-input input {
   padding: 0.3rem 0.5rem;
   border: 1px solid var(--border);
