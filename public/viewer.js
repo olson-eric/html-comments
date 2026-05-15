@@ -19,6 +19,11 @@ hideResolvedToggle.addEventListener('change', () => {
 
 let state = { meta: null, comments: [], pendingAnchor: null, activeCommentId: null };
 
+const POLL_COMMENTS_MS = 5000;
+const POLL_DOC_MS = 15000;
+let lastCommentsEtag = null;
+let lastDocModifiedAt = null;
+
 document.getElementById('copy-link').addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(location.href);
@@ -44,6 +49,8 @@ async function bootstrap() {
   }
   state.meta = await res.json();
   state.comments = state.meta.comments || [];
+  lastCommentsEtag = JSON.stringify(state.comments);
+  lastDocModifiedAt = state.meta.modifiedAt;
   document.getElementById('page-title').textContent = state.meta.title;
   const pathEl = document.getElementById('page-path');
   if (pathEl) pathEl.textContent = state.meta.path;
@@ -55,6 +62,61 @@ async function bootstrap() {
     renderSidebar();
   });
   frame.src = `/raw/${state.meta.path.split('/').map(encodeURIComponent).join('/')}`;
+
+  setInterval(pollComments, POLL_COMMENTS_MS);
+  setInterval(pollDocument, POLL_DOC_MS);
+}
+
+async function pollComments() {
+  if (commentsList.querySelector('.composer-host, .reply-composer')) return;
+  try {
+    const res = await fetch(`/api/file/comments${apiQS}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const etag = JSON.stringify(data.comments);
+    if (etag === lastCommentsEtag) return;
+    lastCommentsEtag = etag;
+    if (mergeComments(data.comments)) {
+      renderHighlights();
+      renderSidebar();
+    }
+  } catch {}
+}
+
+function mergeComments(serverComments) {
+  const localById = new Map(state.comments.map((c) => [c.id, c]));
+  const serverById = new Map(serverComments.map((c) => [c.id, c]));
+  let changed = false;
+  for (const sc of serverComments) {
+    if (!localById.has(sc.id)) {
+      state.comments.push(sc);
+      changed = true;
+    } else {
+      const lc = localById.get(sc.id);
+      if (JSON.stringify(lc) !== JSON.stringify(sc)) {
+        Object.assign(lc, sc);
+        changed = true;
+      }
+    }
+  }
+  const prevLen = state.comments.length;
+  state.comments = state.comments.filter((c) => serverById.has(c.id));
+  if (state.comments.length !== prevLen) changed = true;
+  return changed;
+}
+
+async function pollDocument() {
+  if (commentsList.querySelector('.composer-host, .reply-composer')) return;
+  try {
+    const res = await fetch(`/api/file${apiQS}`);
+    if (!res.ok) return;
+    const meta = await res.json();
+    if (meta.modifiedAt === lastDocModifiedAt) return;
+    lastDocModifiedAt = meta.modifiedAt;
+    state.meta = meta;
+    flash('Document updated — reloading…');
+    frame.src = `/raw/${state.meta.path.split('/').map(encodeURIComponent).join('/')}?_t=${Date.now()}`;
+  } catch {}
 }
 
 function injectFrameHooks() {

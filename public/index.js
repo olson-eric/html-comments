@@ -1,3 +1,5 @@
+let lastTreeEtag = null;
+
 async function loadRoot() {
   const res = await fetch('/api/root');
   const { root, name } = await res.json();
@@ -6,18 +8,24 @@ async function loadRoot() {
 }
 
 async function loadTree() {
-  const res = await fetch('/api/tree');
-  const tree = await res.json();
-  const container = document.getElementById('tree');
-  container.innerHTML = '';
-  if (!tree.children.length) {
-    const empty = document.createElement('p');
-    empty.className = 'muted';
-    empty.textContent = 'No .html files found in this directory.';
-    container.appendChild(empty);
-    return;
-  }
-  container.appendChild(renderChildren(tree.children, 0));
+  try {
+    const res = await fetch('/api/tree');
+    if (!res.ok) return;
+    const tree = await res.json();
+    const etag = JSON.stringify(tree);
+    if (etag === lastTreeEtag) return;
+    lastTreeEtag = etag;
+    const container = document.getElementById('tree');
+    container.innerHTML = '';
+    if (!tree.children.length) {
+      const empty = document.createElement('p');
+      empty.className = 'muted';
+      empty.textContent = 'No .html files found in this directory.';
+      container.appendChild(empty);
+      return;
+    }
+    container.appendChild(renderChildren(tree.children, 0));
+  } catch {}
 }
 
 function renderChildren(children, depth) {
@@ -77,3 +85,4 @@ document.getElementById('refresh').addEventListener('click', loadTree);
 
 loadRoot();
 loadTree();
+setInterval(loadTree, 10000);
