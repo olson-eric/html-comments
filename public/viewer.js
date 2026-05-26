@@ -182,13 +182,14 @@ function openComposerForNewComment(anchor) {
   host.className = 'thread composer-host';
   const composer = composerTemplate.content.firstElementChild.cloneNode(true);
   composer.querySelector('.composer-quote').textContent = `“${truncate(anchor.quote, 140)}”`;
-  composer.querySelector('textarea').focus();
+  const ta = composer.querySelector('textarea');
+  ta.focus();
+  wireMarkdownPreview(ta, composer.querySelector('.markdown-preview'));
   composer.querySelector('[data-action="cancel"]').addEventListener('click', () => {
     host.remove();
     state.pendingAnchor = null;
   });
   composer.querySelector('[data-action="save"]').addEventListener('click', async () => {
-    const ta = composer.querySelector('textarea');
     const text = ta.value.trim();
     if (!text) return;
     await createComment(anchor, text);
@@ -405,8 +406,8 @@ function renderThread(comment) {
   wrap.appendChild(header);
 
   const body = document.createElement('div');
-  body.className = 'thread-body';
-  body.textContent = comment.text;
+  body.className = 'thread-body markdown-body';
+  body.innerHTML = renderMarkdown(comment.text);
   wrap.appendChild(body);
 
   for (const r of comment.replies || []) {
@@ -414,9 +415,9 @@ function renderThread(comment) {
     reply.className = 'reply';
     reply.innerHTML = `
       <div class="reply-meta"><strong>${escapeHtml(r.author)}</strong> · ${formatDate(r.createdAt)}</div>
-      <div class="reply-body"></div>
+      <div class="reply-body markdown-body"></div>
     `;
-    reply.querySelector('.reply-body').textContent = r.text;
+    reply.querySelector('.reply-body').innerHTML = renderMarkdown(r.text);
     wrap.appendChild(reply);
   }
 
@@ -446,8 +447,10 @@ function openReplyBox(threadEl, commentId) {
   const box = document.createElement('div');
   box.className = 'reply-composer';
   box.innerHTML = `
-    <textarea rows="2" placeholder="Reply…"></textarea>
+    <textarea rows="2" placeholder="Reply… (markdown supported)"></textarea>
+    <div class="markdown-preview" hidden></div>
     <div class="composer-actions">
+      <span class="composer-hint">Markdown supported</span>
       <button data-action="cancel" class="secondary">Cancel</button>
       <button data-action="save">Reply</button>
     </div>
@@ -455,6 +458,7 @@ function openReplyBox(threadEl, commentId) {
   threadEl.appendChild(box);
   const ta = box.querySelector('textarea');
   ta.focus();
+  wireMarkdownPreview(ta, box.querySelector('.markdown-preview'));
   box.querySelector('[data-action="cancel"]').addEventListener('click', () => box.remove());
   box.querySelector('[data-action="save"]').addEventListener('click', async () => {
     const text = ta.value.trim();
@@ -488,6 +492,132 @@ function setActiveComment(commentId, opts = {}) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+function renderMarkdown(src) {
+  if (src == null) return '';
+  let text = String(src);
+  if (!text.trim()) return '';
+
+  const codeBlocks = [];
+  text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = codeBlocks.push({ lang, code: code.replace(/\n$/, '') }) - 1;
+    return `\x00CB${idx}\x00`;
+  });
+
+  const inlineCodes = [];
+  text = text.replace(/`([^`\n]+)`/g, (_, code) => {
+    const idx = inlineCodes.push(code) - 1;
+    return `\x00IC${idx}\x00`;
+  });
+
+  function renderInline(raw) {
+    let s = escapeHtml(raw);
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, txt, url) => {
+      const safe = /^(https?:|mailto:|\/|#)/i.test(url) ? url : '#';
+      return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
+    });
+    s = s.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/__([^_\n]+?)__/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[^*\w])\*([^*\n]+?)\*(?!\w)/g, '$1<em>$2</em>');
+    s = s.replace(/(^|[^_\w])_([^_\n]+?)_(?!\w)/g, '$1<em>$2</em>');
+    s = s.replace(/~~([^~\n]+?)~~/g, '<del>$1</del>');
+    s = s.replace(/\x00IC(\d+)\x00/g, (_m, idx) => `<code>${escapeHtml(inlineCodes[+idx])}</code>`);
+    return s;
+  }
+
+  const lines = text.split('\n');
+  const out = [];
+  let i = 0;
+  const isBlockStart = (ln) =>
+    /^(#{1,6}\s|>\s?|[-*]\s+|\d+\.\s+)/.test(ln) ||
+    /^(\*{3,}|-{3,}|_{3,})\s*$/.test(ln) ||
+    /^\x00CB\d+\x00$/.test(ln);
+
+  while (i < lines.length) {
+    const line = lines[i];
+    let m;
+
+    if ((m = line.match(/^\x00CB(\d+)\x00$/))) {
+      const cb = codeBlocks[+m[1]];
+      const langClass = cb.lang ? ` class="language-${escapeHtml(cb.lang)}"` : '';
+      out.push(`<pre><code${langClass}>${escapeHtml(cb.code)}</code></pre>`);
+      i++;
+      continue;
+    }
+
+    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
+      out.push(`<h${m[1].length}>${renderInline(m[2])}</h${m[1].length}>`);
+      i++;
+      continue;
+    }
+
+    if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
+      out.push('<hr>');
+      i++;
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      const block = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        block.push(lines[i].replace(/^>\s?/, ''));
+        i++;
+      }
+      out.push(`<blockquote>${renderInline(block.join('\n')).replace(/\n/g, '<br>')}</blockquote>`);
+      continue;
+    }
+
+    if (/^[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
+        items.push(`<li>${renderInline(lines[i].replace(/^[-*]\s+/, ''))}</li>`);
+        i++;
+      }
+      out.push(`<ul>${items.join('')}</ul>`);
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
+        items.push(`<li>${renderInline(lines[i].replace(/^\d+\.\s+/, ''))}</li>`);
+        i++;
+      }
+      out.push(`<ol>${items.join('')}</ol>`);
+      continue;
+    }
+
+    if (line.trim() === '') {
+      i++;
+      continue;
+    }
+
+    const para = [];
+    while (i < lines.length && lines[i].trim() !== '' && !isBlockStart(lines[i])) {
+      para.push(lines[i]);
+      i++;
+    }
+    out.push(`<p>${renderInline(para.join('\n')).replace(/\n/g, '<br>')}</p>`);
+  }
+
+  return out.join('');
+}
+
+function wireMarkdownPreview(textarea, previewEl) {
+  if (!textarea || !previewEl) return;
+  const update = () => {
+    const val = textarea.value;
+    if (!val.trim()) {
+      previewEl.hidden = true;
+      previewEl.innerHTML = '';
+      return;
+    }
+    previewEl.innerHTML = renderMarkdown(val);
+    previewEl.hidden = false;
+  };
+  textarea.addEventListener('input', update);
+  update();
 }
 
 function truncate(s, n) {

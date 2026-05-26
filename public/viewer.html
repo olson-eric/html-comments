@@ -47,8 +47,10 @@
         <template id="composer-template">
           <div class="composer">
             <div class="composer-quote"></div>
-            <textarea placeholder="Add a comment…" rows="3"></textarea>
+            <textarea placeholder="Add a comment… (markdown supported)" rows="3"></textarea>
+            <div class="markdown-preview" hidden></div>
             <div class="composer-actions">
+              <span class="composer-hint">Markdown supported</span>
               <button data-action="cancel" class="secondary">Cancel</button>
               <button data-action="save">Comment</button>
             </div>
