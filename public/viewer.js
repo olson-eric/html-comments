@@ -315,15 +315,73 @@ function renderHighlights() {
   if (!doc || !doc.body) return;
   clearHighlights();
   const hideResolved = hideResolvedToggle.checked;
-  const sorted = [...state.comments].sort((a, b) => a.anchor.startIdx - b.anchor.startIdx);
-  for (const c of sorted) {
+  const fullText = collectText(doc.body);
+  const resolved = [];
+  for (const c of state.comments) {
     if (hideResolved && c.resolved) continue;
-    applyHighlight(doc.body, c);
+    const r = resolveAnchor(fullText, c.anchor);
+    if (!r) continue;
+    resolved.push({ comment: c, startIdx: r.startIdx, length: r.length });
+  }
+  resolved.sort((a, b) => a.startIdx - b.startIdx);
+  for (const r of resolved) {
+    applyHighlight(doc.body, r.comment, r.startIdx, r.length);
   }
 }
 
-function applyHighlight(root, comment) {
-  const { startIdx, length } = comment.anchor;
+function resolveAnchor(fullText, anchor) {
+  const { startIdx, length, quote, contextBefore, contextAfter } = anchor;
+
+  if (quote && fullText.substr(startIdx, length) === quote) {
+    return { startIdx, length };
+  }
+
+  if (!quote) {
+    if (startIdx >= 0 && startIdx + length <= fullText.length) {
+      return { startIdx, length };
+    }
+    return null;
+  }
+
+  const occurrences = [];
+  for (let i = fullText.indexOf(quote); i !== -1; i = fullText.indexOf(quote, i + 1)) {
+    occurrences.push(i);
+  }
+  if (!occurrences.length) return null;
+  if (occurrences.length === 1) return { startIdx: occurrences[0], length: quote.length };
+
+  let best = occurrences[0];
+  let bestScore = -Infinity;
+  for (const i of occurrences) {
+    const beforeActual = fullText.slice(Math.max(0, i - 40), i);
+    const afterActual = fullText.slice(i + quote.length, i + quote.length + 40);
+    const beforeScore = suffixMatchLen(beforeActual, contextBefore || '');
+    const afterScore = prefixMatchLen(afterActual, contextAfter || '');
+    const distancePenalty = Math.abs(i - startIdx) * 0.01;
+    const score = beforeScore + afterScore - distancePenalty;
+    if (score > bestScore) {
+      bestScore = score;
+      best = i;
+    }
+  }
+  return { startIdx: best, length: quote.length };
+}
+
+function suffixMatchLen(a, b) {
+  const limit = Math.min(a.length, b.length);
+  let n = 0;
+  while (n < limit && a[a.length - 1 - n] === b[b.length - 1 - n]) n++;
+  return n;
+}
+
+function prefixMatchLen(a, b) {
+  const limit = Math.min(a.length, b.length);
+  let n = 0;
+  while (n < limit && a[n] === b[n]) n++;
+  return n;
+}
+
+function applyHighlight(root, comment, startIdx, length) {
   const endIdx = startIdx + length;
   const wraps = [];
   let total = 0;
