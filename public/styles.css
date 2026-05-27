@@ -407,24 +407,18 @@ body.viewer { height: 100vh; display: flex; flex-direction: column; overflow: hi
   color: var(--muted);
 }
 .markdown-preview {
-  margin-top: 0.4rem;
-  padding: 0.5rem 0.6rem;
-  border: 1px dashed var(--border);
+  padding: 0.5rem;
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg);
+  background: var(--surface);
   font-size: 0.9rem;
-  max-height: 220px;
+  cursor: text;
+  min-height: 4.4rem;
+  max-height: 320px;
   overflow-y: auto;
 }
-.markdown-preview::before {
-  content: 'Preview';
-  display: block;
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--muted);
-  margin-bottom: 0.35rem;
-}
+.markdown-preview:hover { border-color: var(--accent); }
+.reply-composer .markdown-preview { min-height: 3rem; }
 .reply-composer {
   margin-top: 0.5rem;
   padding-top: 0.5rem;

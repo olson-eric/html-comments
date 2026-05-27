@@ -664,18 +664,30 @@ function renderMarkdown(src) {
 
 function wireMarkdownPreview(textarea, previewEl) {
   if (!textarea || !previewEl) return;
-  const update = () => {
+
+  const showPreview = () => {
     const val = textarea.value;
-    if (!val.trim()) {
-      previewEl.hidden = true;
-      previewEl.innerHTML = '';
-      return;
-    }
+    if (!val.trim()) return;
     previewEl.innerHTML = renderMarkdown(val);
     previewEl.hidden = false;
+    textarea.hidden = true;
   };
-  textarea.addEventListener('input', update);
-  update();
+
+  const showEditor = () => {
+    textarea.hidden = false;
+    previewEl.hidden = true;
+    textarea.focus();
+  };
+
+  textarea.addEventListener('blur', () => {
+    setTimeout(() => {
+      if (!document.body.contains(textarea)) return;
+      if (document.activeElement === textarea) return;
+      showPreview();
+    }, 0);
+  });
+
+  previewEl.addEventListener('click', showEditor);
 }
 
 function truncate(s, n) {
