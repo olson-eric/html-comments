@@ -134,6 +134,17 @@ function injectFrameHooks() {
   doc.addEventListener('mouseup', onFrameSelection);
   doc.addEventListener('keyup', onFrameSelection);
   doc.addEventListener('click', (e) => {
+    const link = e.target.closest && e.target.closest('a[href]');
+    if (link) {
+      const href = link.getAttribute('href');
+      // Let in-page anchor jumps (#fragment) behave normally inside the frame.
+      if (href && !href.startsWith('#')) {
+        e.preventDefault();
+        const url = link.href; // resolved absolute URL
+        if (url) window.open(url, '_blank', 'noopener,noreferrer');
+        return;
+      }
+    }
     const span = e.target.closest && e.target.closest('.hc-highlight');
     if (span) {
       const cid = span.dataset.commentId;
