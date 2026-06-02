@@ -169,6 +169,10 @@ function injectFrameHooks() {
 // their original colors. It's a heuristic, not a real theme — pages that ship
 // their own dark styling generally look better with this left off.
 function applyDarkPage() {
+  // The iframe element's own background lives in the chrome (outside the
+  // inverted document), so flip it too — otherwise a transparent or
+  // partial-height page shows light behind/around its content.
+  frame.style.background = darkPageToggle.checked ? '#161922' : '';
   const doc = frame.contentDocument;
   if (!doc) return;
   const STYLE_ID = 'hc-dark-page';
@@ -182,8 +186,11 @@ function applyDarkPage() {
     style.id = STYLE_ID;
     (doc.head || doc.documentElement).appendChild(style);
   }
+  // Force an opaque LIGHT base so the page-wide invert below turns it dark
+  // (a dark base would get inverted back to light). invert() then flips the
+  // whole document; media is re-inverted so images/video keep real colors.
   style.textContent = `
-    html { background: #15171c !important; filter: invert(0.92) hue-rotate(180deg); }
+    html { background-color: #ffffff !important; filter: invert(0.92) hue-rotate(180deg); }
     img, picture, video, canvas, svg, iframe, embed, object,
     [style*="background-image"], [style*="background: url"], [style*="background:url"] {
       filter: invert(1) hue-rotate(180deg) !important;
