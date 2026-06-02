@@ -17,6 +17,13 @@ hideResolvedToggle.addEventListener('change', () => {
   renderHighlights();
 });
 
+const darkPageToggle = document.getElementById('dark-page');
+darkPageToggle.checked = localStorage.getItem('hc:darkPage') === '1';
+darkPageToggle.addEventListener('change', () => {
+  localStorage.setItem('hc:darkPage', darkPageToggle.checked ? '1' : '0');
+  applyDarkPage();
+});
+
 let state = { meta: null, comments: [], pendingAnchor: null, activeCommentId: null };
 
 const POLL_COMMENTS_MS = 5000;
@@ -58,6 +65,7 @@ async function bootstrap() {
 
   frame.addEventListener('load', () => {
     injectFrameHooks();
+    applyDarkPage();
     renderHighlights();
     renderSidebar();
   });
@@ -153,6 +161,34 @@ function injectFrameHooks() {
       setActiveComment(null);
     }
   });
+}
+
+// Best-effort dark rendering of the document inside the iframe. Many HTML
+// artifacts assume a light background, so when "Dark page" is on we invert the
+// whole document and re-invert media (images/video/canvas/etc.) so they keep
+// their original colors. It's a heuristic, not a real theme — pages that ship
+// their own dark styling generally look better with this left off.
+function applyDarkPage() {
+  const doc = frame.contentDocument;
+  if (!doc) return;
+  const STYLE_ID = 'hc-dark-page';
+  let style = doc.getElementById(STYLE_ID);
+  if (!darkPageToggle.checked) {
+    if (style) style.remove();
+    return;
+  }
+  if (!style) {
+    style = doc.createElement('style');
+    style.id = STYLE_ID;
+    (doc.head || doc.documentElement).appendChild(style);
+  }
+  style.textContent = `
+    html { background: #15171c !important; filter: invert(0.92) hue-rotate(180deg); }
+    img, picture, video, canvas, svg, iframe, embed, object,
+    [style*="background-image"], [style*="background: url"], [style*="background:url"] {
+      filter: invert(1) hue-rotate(180deg) !important;
+    }
+  `;
 }
 
 function onFrameSelection() {

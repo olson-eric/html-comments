@@ -5,6 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>html-comments — viewer</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // Apply the saved (or OS-preferred) theme before first paint to avoid a flash.
+      (function () {
+        try {
+          var t = localStorage.getItem('hc:theme');
+          if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          document.documentElement.dataset.theme = t;
+        } catch (e) {}
+      })();
+    </script>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="viewer">
@@ -19,11 +29,16 @@
           <input type="checkbox" id="hide-resolved" />
           <span>Hide resolved</span>
         </label>
+        <label class="toggle">
+          <input type="checkbox" id="dark-page" />
+          <span title="Best-effort dark rendering of the document itself">Dark page</span>
+        </label>
         <label class="author-input">
           <span>You:</span>
           <input type="text" id="author" placeholder="Your name" />
         </label>
         <button id="copy-link">Copy link</button>
+        <button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle dark mode">🌙</button>
       </div>
     </header>
 
@@ -60,6 +75,7 @@
       </aside>
     </main>
 
+    <script src="/theme.js"></script>
     <script src="/viewer.js"></script>
   </body>
 </html>

@@ -24,6 +24,20 @@ Then open `http://localhost:4747` and you'll see a file tree. Click an `.html` f
 
 Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, hashed by relative path). Override with `COMMENTS_DIR=…` if you want them somewhere else.
 
+## Dark mode
+
+The app chrome (file browser, viewer, and comment sidebar) has a built-in dark
+theme. Use the 🌙 / ☀️ toggle in the top-right of either screen to switch. Your
+choice is saved in `localStorage`; if you've never picked one, it follows your
+OS `prefers-color-scheme` and tracks live changes to it.
+
+Rendered HTML documents are shown as-is, so a page that ships its own styling
+keeps its own look. For pages that assume a light background, the viewer has a
+separate **Dark page** toggle that makes a best-effort attempt to render the
+document dark (it inverts the document and re-inverts images/media so they keep
+their original colors). It's a heuristic — pages that already have a dark theme
+usually look best with it left off.
+
 ## How comments are anchored
 
 Each comment is anchored to a character range in the rendered page's plain text (computed by walking text nodes in document order). We also store:

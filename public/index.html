@@ -5,10 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>html-comments</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <script>
+      // Apply the saved (or OS-preferred) theme before first paint to avoid a flash.
+      (function () {
+        try {
+          var t = localStorage.getItem('hc:theme');
+          if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          document.documentElement.dataset.theme = t;
+        } catch (e) {}
+      })();
+    </script>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body class="home">
     <header class="home-header">
+      <button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle dark mode">🌙</button>
       <h1>html-comments</h1>
       <p>Browse HTML files in <code id="root-path">…</code>. Pick one to read and leave inline comments.</p>
     </header>
@@ -35,6 +46,7 @@ DELETE /api/file/comments/:cid?path=foo/bar.html</code></pre>
       </section>
     </main>
 
+    <script src="/theme.js"></script>
     <script src="/index.js"></script>
   </body>
 </html>
