@@ -1,6 +1,9 @@
 const filePath = new URLSearchParams(location.search).get('path') || '';
 const apiQS = `?path=${encodeURIComponent(filePath)}`;
 const frame = document.getElementById('page-frame');
+const imageStage = document.getElementById('image-stage');
+const pageImage = document.getElementById('page-image');
+const imageOverlay = document.getElementById('image-overlay');
 const commentsList = document.getElementById('comments-list');
 const filterSelect = document.getElementById('filter');
 const popover = document.getElementById('add-comment-popover');
@@ -63,16 +66,30 @@ async function bootstrap() {
   if (pathEl) pathEl.textContent = state.meta.path;
   document.title = `${state.meta.title} — html-comments`;
 
-  frame.addEventListener('load', () => {
-    injectFrameHooks();
-    applyDarkPage();
-    renderHighlights();
-    renderSidebar();
-  });
-  frame.src = `/raw/${state.meta.path.split('/').map(encodeURIComponent).join('/')}`;
+  if (isImageDoc()) {
+    setupImageMode();
+  } else {
+    frame.addEventListener('load', () => {
+      injectFrameHooks();
+      applyDarkPage();
+      renderHighlights();
+      renderSidebar();
+    });
+    frame.src = docUrl();
+  }
 
   setInterval(pollComments, POLL_COMMENTS_MS);
   setInterval(pollDocument, POLL_DOC_MS);
+}
+
+function isImageDoc() {
+  return state.meta && state.meta.kind === 'image';
+}
+
+function docUrl() {
+  const encoded = state.meta.path.split('/').map(encodeURIComponent).join('/');
+  if (isImageDoc()) return `/raw/${encoded}`;
+  return state.meta.kind === 'markdown' ? `/render/${encoded}` : `/raw/${encoded}`;
 }
 
 async function pollComments() {
@@ -123,7 +140,11 @@ async function pollDocument() {
     lastDocModifiedAt = meta.modifiedAt;
     state.meta = meta;
     flash('Document updated — reloading…');
-    frame.src = `/raw/${state.meta.path.split('/').map(encodeURIComponent).join('/')}?_t=${Date.now()}`;
+    if (isImageDoc()) {
+      pageImage.src = `${docUrl()}?_t=${Date.now()}`;
+    } else {
+      frame.src = `${docUrl()}?_t=${Date.now()}`;
+    }
   } catch {}
 }
 
@@ -161,6 +182,125 @@ function injectFrameHooks() {
       setActiveComment(null);
     }
   });
+}
+
+// Image mode: the document is a single image shown directly in the pane (no
+// iframe). Comments are anchored to rectangular regions drawn by dragging on
+// the image, stored as fractions of the image size so they survive rescaling.
+let draftRegionEl = null;
+
+function setupImageMode() {
+  frame.hidden = true;
+  imageStage.hidden = false;
+  const darkToggleLabel = darkPageToggle.closest('.toggle');
+  if (darkToggleLabel) darkToggleLabel.hidden = true;
+  pageImage.src = docUrl();
+  pageImage.addEventListener('load', renderHighlights);
+  renderSidebar();
+
+  let drag = null;
+  imageOverlay.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest('.hc-region')) return;
+    e.preventDefault();
+    popover.hidden = true;
+    clearDraftRegion();
+    const rect = imageOverlay.getBoundingClientRect();
+    drag = { x0: e.clientX - rect.left, y0: e.clientY - rect.top, rect };
+    draftRegionEl = document.createElement('div');
+    draftRegionEl.className = 'hc-region-draft';
+    imageOverlay.appendChild(draftRegionEl);
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!drag) return;
+    positionRegion(draftRegionEl, dragBox(drag, e));
+  });
+  window.addEventListener('mouseup', (e) => {
+    if (!drag) return;
+    const box = dragBox(drag, e);
+    const { rect } = drag;
+    drag = null;
+    // Treat tiny drags as a click: deselect instead of creating a sliver region.
+    if (box.w * rect.width < 8 || box.h * rect.height < 8) {
+      clearDraftRegion();
+      setActiveComment(null);
+      return;
+    }
+    positionRegion(draftRegionEl, box);
+    state.pendingAnchor = {
+      type: 'region',
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
+      imageWidth: pageImage.naturalWidth,
+      imageHeight: pageImage.naturalHeight,
+    };
+    const paneRect = document.querySelector('.page-pane').getBoundingClientRect();
+    const overlayRect = imageOverlay.getBoundingClientRect();
+    popover.style.left = `${overlayRect.left - paneRect.left + box.x * overlayRect.width}px`;
+    popover.style.top = `${overlayRect.top - paneRect.top + (box.y + box.h) * overlayRect.height + 6}px`;
+    popover.hidden = false;
+  });
+}
+
+function dragBox(drag, e) {
+  const { rect } = drag;
+  const x1 = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
+  const y1 = Math.min(Math.max(e.clientY - rect.top, 0), rect.height);
+  return {
+    x: Math.min(drag.x0, x1) / rect.width,
+    y: Math.min(drag.y0, y1) / rect.height,
+    w: Math.abs(x1 - drag.x0) / rect.width,
+    h: Math.abs(y1 - drag.y0) / rect.height,
+  };
+}
+
+// Regions are positioned with percentages so they track the displayed image
+// size with no resize listeners.
+function positionRegion(el, box) {
+  el.style.left = `${box.x * 100}%`;
+  el.style.top = `${box.y * 100}%`;
+  el.style.width = `${box.w * 100}%`;
+  el.style.height = `${box.h * 100}%`;
+}
+
+function clearDraftRegion() {
+  if (draftRegionEl) {
+    draftRegionEl.remove();
+    draftRegionEl = null;
+  }
+}
+
+function renderImageHighlights() {
+  imageOverlay.querySelectorAll('.hc-region').forEach((el) => el.remove());
+  const hideResolved = hideResolvedToggle.checked;
+  for (const c of state.comments) {
+    if (!isRegionAnchor(c.anchor)) continue;
+    if (hideResolved && c.resolved) continue;
+    const el = document.createElement('div');
+    el.className =
+      'hc-region' +
+      (c.resolved ? ' hc-resolved' : '') +
+      (c.id === state.activeCommentId ? ' hc-active' : '');
+    el.dataset.commentId = c.id;
+    positionRegion(el, c.anchor);
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setActiveComment(c.id, { scrollSidebar: true });
+    });
+    imageOverlay.appendChild(el);
+  }
+}
+
+function isRegionAnchor(anchor) {
+  return !!anchor && typeof anchor.x === 'number' && typeof anchor.y === 'number';
+}
+
+function anchorLabel(anchor) {
+  if (!isRegionAnchor(anchor)) return truncate(anchor && anchor.quote, 140);
+  const pct = (v) => `${Math.round(v * 100)}%`;
+  return `Region at ${pct(anchor.x)}, ${pct(anchor.y)} · ${pct(anchor.w)} × ${pct(anchor.h)}`;
 }
 
 // Best-effort dark rendering of the document inside the iframe. Many HTML
@@ -235,13 +375,16 @@ function openComposerForNewComment(anchor) {
   const host = document.createElement('div');
   host.className = 'thread composer-host';
   const composer = composerTemplate.content.firstElementChild.cloneNode(true);
-  composer.querySelector('.composer-quote').textContent = `“${truncate(anchor.quote, 140)}”`;
+  composer.querySelector('.composer-quote').textContent = isRegionAnchor(anchor)
+    ? `📐 ${anchorLabel(anchor)}`
+    : `“${truncate(anchor.quote, 140)}”`;
   const ta = composer.querySelector('textarea');
   ta.focus();
   wireMarkdownPreview(ta, composer.querySelector('.markdown-preview'));
   composer.querySelector('[data-action="cancel"]').addEventListener('click', () => {
     host.remove();
     state.pendingAnchor = null;
+    clearDraftRegion();
   });
   composer.querySelector('[data-action="save"]').addEventListener('click', async () => {
     const text = ta.value.trim();
@@ -249,6 +392,7 @@ function openComposerForNewComment(anchor) {
     await createComment(anchor, text);
     host.remove();
     state.pendingAnchor = null;
+    clearDraftRegion();
   });
   host.appendChild(composer);
   commentsList.prepend(host);
@@ -365,6 +509,7 @@ function clearHighlights() {
 }
 
 function renderHighlights() {
+  if (isImageDoc()) return renderImageHighlights();
   const doc = frame.contentDocument;
   if (!doc || !doc.body) return;
   clearHighlights();
@@ -481,11 +626,13 @@ function renderSidebar() {
   let comments = [...state.comments];
   if (filter === 'open') comments = comments.filter((c) => !c.resolved);
   if (filter === 'resolved') comments = comments.filter((c) => c.resolved);
-  comments.sort((a, b) => a.anchor.startIdx - b.anchor.startIdx);
+  comments.sort((a, b) => anchorSortKey(a.anchor) - anchorSortKey(b.anchor));
   if (!comments.length) {
     const empty = document.createElement('div');
     empty.className = 'muted empty';
-    empty.textContent = 'No comments yet. Select text in the page to add one.';
+    empty.textContent = isImageDoc()
+      ? 'No comments yet. Drag a box on the image to add one.'
+      : 'No comments yet. Select text in the page to add one.';
     commentsList.appendChild(empty);
     return;
   }
@@ -506,10 +653,13 @@ function renderThread(comment) {
     if (e.target.closest('button, textarea, input')) return;
     setActiveComment(comment.id, { scrollFrame: true });
   });
+  const quoteHtml = isRegionAnchor(comment.anchor)
+    ? `📐 ${escapeHtml(anchorLabel(comment.anchor))}`
+    : `“${escapeHtml(truncate(comment.anchor.quote, 140))}”`;
   const header = document.createElement('div');
   header.className = 'thread-header';
   header.innerHTML = `
-    <div class="thread-quote">“${escapeHtml(truncate(comment.anchor.quote, 140))}”</div>
+    <div class="thread-quote">${quoteHtml}</div>
     <div class="thread-meta">
       <strong>${escapeHtml(comment.author)}</strong>
       <span>${formatDate(comment.createdAt)}</span>
@@ -579,10 +729,25 @@ function openReplyBox(threadEl, commentId) {
   });
 }
 
+function anchorSortKey(anchor) {
+  if (isRegionAnchor(anchor)) return anchor.y * 1e6 + anchor.x * 1e3;
+  return anchor && typeof anchor.startIdx === 'number' ? anchor.startIdx : 0;
+}
+
 function setActiveComment(commentId, opts = {}) {
   state.activeCommentId = commentId;
+  if (isImageDoc()) {
+    imageOverlay.querySelectorAll('.hc-region.hc-active').forEach((el) => el.classList.remove('hc-active'));
+    if (commentId) {
+      const target = imageOverlay.querySelector(`.hc-region[data-comment-id="${commentId}"]`);
+      if (target) {
+        target.classList.add('hc-active');
+        if (opts.scrollFrame) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  }
   const doc = frame.contentDocument;
-  if (doc) {
+  if (doc && !isImageDoc()) {
     doc.querySelectorAll('.hc-highlight.hc-active').forEach((el) => el.classList.remove('hc-active'));
     if (commentId) {
       const target = doc.querySelector(`.hc-highlight[data-comment-id="${commentId}"]`);
@@ -606,115 +771,7 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
-function renderMarkdown(src) {
-  if (src == null) return '';
-  let text = String(src);
-  if (!text.trim()) return '';
-
-  const codeBlocks = [];
-  text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-    const idx = codeBlocks.push({ lang, code: code.replace(/\n$/, '') }) - 1;
-    return `\x00CB${idx}\x00`;
-  });
-
-  const inlineCodes = [];
-  text = text.replace(/`([^`\n]+)`/g, (_, code) => {
-    const idx = inlineCodes.push(code) - 1;
-    return `\x00IC${idx}\x00`;
-  });
-
-  function renderInline(raw) {
-    let s = escapeHtml(raw);
-    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, txt, url) => {
-      const safe = /^(https?:|mailto:|\/|#)/i.test(url) ? url : '#';
-      return `<a href="${safe}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
-    });
-    s = s.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/__([^_\n]+?)__/g, '<strong>$1</strong>');
-    s = s.replace(/(^|[^*\w])\*([^*\n]+?)\*(?!\w)/g, '$1<em>$2</em>');
-    s = s.replace(/(^|[^_\w])_([^_\n]+?)_(?!\w)/g, '$1<em>$2</em>');
-    s = s.replace(/~~([^~\n]+?)~~/g, '<del>$1</del>');
-    s = s.replace(/\x00IC(\d+)\x00/g, (_m, idx) => `<code>${escapeHtml(inlineCodes[+idx])}</code>`);
-    return s;
-  }
-
-  const lines = text.split('\n');
-  const out = [];
-  let i = 0;
-  const isBlockStart = (ln) =>
-    /^(#{1,6}\s|>\s?|[-*]\s+|\d+\.\s+)/.test(ln) ||
-    /^(\*{3,}|-{3,}|_{3,})\s*$/.test(ln) ||
-    /^\x00CB\d+\x00$/.test(ln);
-
-  while (i < lines.length) {
-    const line = lines[i];
-    let m;
-
-    if ((m = line.match(/^\x00CB(\d+)\x00$/))) {
-      const cb = codeBlocks[+m[1]];
-      const langClass = cb.lang ? ` class="language-${escapeHtml(cb.lang)}"` : '';
-      out.push(`<pre><code${langClass}>${escapeHtml(cb.code)}</code></pre>`);
-      i++;
-      continue;
-    }
-
-    if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
-      out.push(`<h${m[1].length}>${renderInline(m[2])}</h${m[1].length}>`);
-      i++;
-      continue;
-    }
-
-    if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
-      out.push('<hr>');
-      i++;
-      continue;
-    }
-
-    if (/^>\s?/.test(line)) {
-      const block = [];
-      while (i < lines.length && /^>\s?/.test(lines[i])) {
-        block.push(lines[i].replace(/^>\s?/, ''));
-        i++;
-      }
-      out.push(`<blockquote>${renderInline(block.join('\n')).replace(/\n/g, '<br>')}</blockquote>`);
-      continue;
-    }
-
-    if (/^[-*]\s+/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
-        items.push(`<li>${renderInline(lines[i].replace(/^[-*]\s+/, ''))}</li>`);
-        i++;
-      }
-      out.push(`<ul>${items.join('')}</ul>`);
-      continue;
-    }
-
-    if (/^\d+\.\s+/.test(line)) {
-      const items = [];
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
-        items.push(`<li>${renderInline(lines[i].replace(/^\d+\.\s+/, ''))}</li>`);
-        i++;
-      }
-      out.push(`<ol>${items.join('')}</ol>`);
-      continue;
-    }
-
-    if (line.trim() === '') {
-      i++;
-      continue;
-    }
-
-    const para = [];
-    while (i < lines.length && lines[i].trim() !== '' && !isBlockStart(lines[i])) {
-      para.push(lines[i]);
-      i++;
-    }
-    out.push(`<p>${renderInline(para.join('\n')).replace(/\n/g, '<br>')}</p>`);
-  }
-
-  return out.join('');
-}
+// renderMarkdown comes from /markdown.js (shared with the server).
 
 function wireMarkdownPreview(textarea, previewEl) {
   if (!textarea || !previewEl) return;

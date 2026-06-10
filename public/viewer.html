@@ -45,6 +45,12 @@
     <main class="viewer-main">
       <section class="page-pane">
         <iframe id="page-frame" sandbox="allow-same-origin allow-scripts allow-popups allow-forms"></iframe>
+        <div id="image-stage" class="image-stage" hidden>
+          <div class="image-wrap">
+            <img id="page-image" alt="" draggable="false" />
+            <div id="image-overlay" class="image-overlay"></div>
+          </div>
+        </div>
         <div id="add-comment-popover" class="add-comment-popover" hidden>
           <button id="start-comment">💬 Add comment</button>
         </div>
@@ -76,6 +82,7 @@
     </main>
 
     <script src="/theme.js"></script>
+    <script src="/markdown.js"></script>
     <script src="/viewer.js"></script>
   </body>
 </html>

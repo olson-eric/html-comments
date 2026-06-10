@@ -261,6 +261,57 @@ body.viewer { height: 100vh; display: flex; flex-direction: column; overflow: hi
   position: absolute;
   z-index: 10;
 }
+
+/* Image documents: shown directly (no iframe) with a region-comment overlay */
+.image-stage {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 1.5rem;
+  background: var(--bg);
+}
+.image-wrap {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
+}
+#page-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.image-overlay {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+}
+.hc-region {
+  position: absolute;
+  border: 2px solid rgba(255, 152, 0, 0.9);
+  background: rgba(255, 213, 79, 0.25);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.hc-region:hover { background: rgba(255, 213, 79, 0.4); }
+.hc-region.hc-resolved {
+  border-color: rgba(130, 130, 130, 0.55);
+  background: rgba(200, 200, 200, 0.15);
+}
+.hc-region.hc-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--row-hover);
+  background: rgba(255, 213, 79, 0.35);
+}
+.hc-region-draft {
+  position: absolute;
+  border: 2px dashed var(--accent);
+  background: rgba(37, 99, 235, 0.12);
+  pointer-events: none;
+}
 .add-comment-popover button {
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
   font-size: 0.85rem;
