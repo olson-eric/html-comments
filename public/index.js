@@ -20,7 +20,7 @@ async function loadTree() {
     if (!tree.children.length) {
       const empty = document.createElement('p');
       empty.className = 'muted';
-      empty.textContent = 'No .html files found in this directory.';
+      empty.textContent = 'No .html, .md, or image files found in this directory.';
       container.appendChild(empty);
       return;
     }
@@ -66,9 +66,10 @@ function renderNode(node, depth) {
       : node.commentCount > 0
         ? `<span class="badge badge-resolved" title="${node.commentCount} comment(s), all resolved">${node.commentCount}</span>`
         : '';
+    const icon = { html: '📄', markdown: '📝', image: '🖼️' }[node.kind] || '📄';
     a.innerHTML = `
       <span class="tree-twisty"></span>
-      <span class="tree-icon">📄</span>
+      <span class="tree-icon">${icon}</span>
       <span class="tree-name">${escapeHtml(node.name)}</span>
       ${badge}
     `;
