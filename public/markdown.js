@@ -1,6 +1,11 @@
 // Minimal markdown renderer shared by the browser (comment bodies, previews)
 // and the server (rendering .md documents). No dependencies; HTML in the
 // source is escaped, URLs are restricted to http(s)/mailto/relative.
+//
+// renderMarkdown(src, opts):
+//   opts.breaks — when true (default), single newlines inside a paragraph or
+//   list item become <br> (chat style, used for comments). When false, wrapped
+//   lines are joined with a space (document style, used for .md files).
 (function (global) {
   'use strict';
 
@@ -16,10 +21,15 @@
     return url;
   }
 
-  function renderMarkdown(src) {
+  const UL_ITEM = /^[-*]\s+(.*)$/;
+  const OL_ITEM = /^(\d+)\.\s+(.*)$/;
+  const HR = /^(\*{3,}|-{3,}|_{3,})\s*$/;
+
+  function renderMarkdown(src, opts) {
     if (src == null) return '';
     let text = String(src);
     if (!text.trim()) return '';
+    const breaks = !(opts && opts.breaks === false);
 
     const codeBlocks = [];
     text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
@@ -33,6 +43,9 @@
       return `\x00IC${idx}\x00`;
     });
 
+    // Inline emphasis can span a soft-wrapped line ("do **not** reuse … its\n
+    // plugins"), so run inline rules over the joined text of the whole block,
+    // then apply the newline policy.
     function renderInline(raw) {
       let s = escapeHtml(raw);
       s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) => {
@@ -41,13 +54,17 @@
       s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, txt, url) => {
         return `<a href="${safeUrl(url)}" target="_blank" rel="noopener noreferrer">${txt}</a>`;
       });
-      s = s.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
-      s = s.replace(/__([^_\n]+?)__/g, '<strong>$1</strong>');
+      s = s.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/__([^_]+?)__/g, '<strong>$1</strong>');
       s = s.replace(/(^|[^*\w])\*([^*\n]+?)\*(?!\w)/g, '$1<em>$2</em>');
       s = s.replace(/(^|[^_\w])_([^_\n]+?)_(?!\w)/g, '$1<em>$2</em>');
       s = s.replace(/~~([^~\n]+?)~~/g, '<del>$1</del>');
       s = s.replace(/\x00IC(\d+)\x00/g, (_m, idx) => `<code>${escapeHtml(inlineCodes[+idx])}</code>`);
       return s;
+    }
+
+    function inlineBlock(blockLines) {
+      return renderInline(blockLines.join('\n')).replace(/\n/g, breaks ? '<br>' : ' ');
     }
 
     function splitTableRow(ln) {
@@ -60,98 +77,152 @@
     const isTableSeparator = (ln) =>
       /^[\s|:-]+$/.test(ln) && ln.includes('-') && ln.includes('|');
 
-    const lines = text.split('\n');
-    const out = [];
-    let i = 0;
     const isBlockStart = (ln) =>
-      /^(#{1,6}\s|>\s?|[-*]\s+|\d+\.\s+)/.test(ln) ||
-      /^(\*{3,}|-{3,}|_{3,})\s*$/.test(ln) ||
+      /^(#{1,6}\s|>\s?)/.test(ln) ||
+      UL_ITEM.test(ln) ||
+      OL_ITEM.test(ln) ||
+      HR.test(ln) ||
       /^\x00CB\d+\x00$/.test(ln);
 
-    while (i < lines.length) {
-      const line = lines[i];
-      let m;
-
-      if ((m = line.match(/^\x00CB(\d+)\x00$/))) {
-        const cb = codeBlocks[+m[1]];
-        const langClass = cb.lang ? ` class="language-${escapeHtml(cb.lang)}"` : '';
-        out.push(`<pre><code${langClass}>${escapeHtml(cb.code)}</code></pre>`);
-        i++;
-        continue;
-      }
-
-      if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
-        out.push(`<h${m[1].length}>${renderInline(m[2])}</h${m[1].length}>`);
-        i++;
-        continue;
-      }
-
-      if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(line)) {
-        out.push('<hr>');
-        i++;
-        continue;
-      }
-
-      if (/^>\s?/.test(line)) {
-        const block = [];
-        while (i < lines.length && /^>\s?/.test(lines[i])) {
-          block.push(lines[i].replace(/^>\s?/, ''));
+    // A list runs until a non-blank, non-indented line that isn't another item.
+    // Indented lines are continuation content of the current item (wrapped
+    // text, nested lists, code blocks); blank lines only end the list when the
+    // next content line doesn't belong to it.
+    function parseList(lines, i) {
+      const ordered = OL_ITEM.test(lines[i]);
+      const itemRe = ordered ? OL_ITEM : UL_ITEM;
+      const items = [];
+      let start = 1;
+      while (i < lines.length) {
+        const ln = lines[i];
+        const m = ln.match(itemRe);
+        if (m) {
+          if (ordered && !items.length) start = parseInt(m[1], 10) || 1;
+          // Continuation lines are dedented by the marker width ("- " = 2,
+          // "12. " = 4) so nested structures parse at the right level.
+          items.push({ indent: ln.length - m[ordered ? 2 : 1].length, lines: [m[ordered ? 2 : 1]] });
           i++;
+          continue;
         }
-        out.push(`<blockquote>${renderInline(block.join('\n')).replace(/\n/g, '<br>')}</blockquote>`);
-        continue;
-      }
-
-      if (/^[-*]\s+/.test(line)) {
-        const items = [];
-        while (i < lines.length && /^[-*]\s+/.test(lines[i])) {
-          items.push(`<li>${renderInline(lines[i].replace(/^[-*]\s+/, ''))}</li>`);
+        if (!items.length) break;
+        if (ln.trim() === '') {
+          let j = i + 1;
+          while (j < lines.length && lines[j].trim() === '') j++;
+          if (j < lines.length && (itemRe.test(lines[j]) || /^\s+\S/.test(lines[j]))) {
+            items[items.length - 1].lines.push('');
+            i++;
+            continue;
+          }
+          break;
+        }
+        if (/^\s+\S/.test(ln)) {
+          const item = items[items.length - 1];
+          item.lines.push(ln.replace(new RegExp(`^\\s{1,${item.indent}}`), ''));
           i++;
+          continue;
         }
-        out.push(`<ul>${items.join('')}</ul>`);
-        continue;
+        break;
       }
-
-      if (/^\d+\.\s+/.test(line)) {
-        const items = [];
-        while (i < lines.length && /^\d+\.\s+/.test(lines[i])) {
-          items.push(`<li>${renderInline(lines[i].replace(/^\d+\.\s+/, ''))}</li>`);
-          i++;
+      const lis = items.map((item) => {
+        const content = item.lines;
+        while (content.length && content[content.length - 1].trim() === '') content.pop();
+        let firstBreak = -1;
+        for (let k = 1; k < content.length; k++) {
+          if (content[k].trim() === '' || isBlockStart(content[k])) {
+            firstBreak = k;
+            break;
+          }
         }
-        out.push(`<ol>${items.join('')}</ol>`);
-        continue;
-      }
-
-      if (line.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
-        const head = splitTableRow(line);
-        i += 2;
-        const rows = [];
-        while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
-          rows.push(splitTableRow(lines[i]));
-          i++;
+        if (firstBreak === -1) return `<li>${inlineBlock(content)}</li>`;
+        // Tight item (nested block follows the text directly): bare lead text.
+        // Loose item (blank line inside): let renderBlocks wrap paragraphs.
+        if (content[firstBreak].trim() !== '') {
+          return `<li>${inlineBlock(content.slice(0, firstBreak))}${renderBlocks(content.slice(firstBreak))}</li>`;
         }
-        const thead = `<thead><tr>${head.map((c) => `<th>${renderInline(c)}</th>`).join('')}</tr></thead>`;
-        const tbody = rows.length
-          ? `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${renderInline(c)}</td>`).join('')}</tr>`).join('')}</tbody>`
-          : '';
-        out.push(`<table>${thead}${tbody}</table>`);
-        continue;
-      }
-
-      if (line.trim() === '') {
-        i++;
-        continue;
-      }
-
-      const para = [];
-      while (i < lines.length && lines[i].trim() !== '' && !isBlockStart(lines[i])) {
-        para.push(lines[i]);
-        i++;
-      }
-      out.push(`<p>${renderInline(para.join('\n')).replace(/\n/g, '<br>')}</p>`);
+        return `<li>${renderBlocks(content)}</li>`;
+      });
+      const tag = ordered ? 'ol' : 'ul';
+      const startAttr = ordered && start !== 1 ? ` start="${start}"` : '';
+      return { html: `<${tag}${startAttr}>${lis.join('')}</${tag}>`, next: i };
     }
 
-    return out.join('');
+    function renderBlocks(lines) {
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        let m;
+
+        if ((m = line.match(/^\x00CB(\d+)\x00$/))) {
+          const cb = codeBlocks[+m[1]];
+          const langClass = cb.lang ? ` class="language-${escapeHtml(cb.lang)}"` : '';
+          out.push(`<pre><code${langClass}>${escapeHtml(cb.code)}</code></pre>`);
+          i++;
+          continue;
+        }
+
+        if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
+          out.push(`<h${m[1].length}>${renderInline(m[2])}</h${m[1].length}>`);
+          i++;
+          continue;
+        }
+
+        if (HR.test(line)) {
+          out.push('<hr>');
+          i++;
+          continue;
+        }
+
+        if (/^>\s?/.test(line)) {
+          const block = [];
+          while (i < lines.length && /^>\s?/.test(lines[i])) {
+            block.push(lines[i].replace(/^>\s?/, ''));
+            i++;
+          }
+          out.push(`<blockquote>${inlineBlock(block)}</blockquote>`);
+          continue;
+        }
+
+        if (UL_ITEM.test(line) || OL_ITEM.test(line)) {
+          const list = parseList(lines, i);
+          out.push(list.html);
+          i = list.next;
+          continue;
+        }
+
+        if (line.includes('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+          const head = splitTableRow(line);
+          i += 2;
+          const rows = [];
+          while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
+            rows.push(splitTableRow(lines[i]));
+            i++;
+          }
+          const thead = `<thead><tr>${head.map((c) => `<th>${renderInline(c)}</th>`).join('')}</tr></thead>`;
+          const tbody = rows.length
+            ? `<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${renderInline(c)}</td>`).join('')}</tr>`).join('')}</tbody>`
+            : '';
+          out.push(`<table>${thead}${tbody}</table>`);
+          continue;
+        }
+
+        if (line.trim() === '') {
+          i++;
+          continue;
+        }
+
+        const para = [];
+        while (i < lines.length && lines[i].trim() !== '' && !isBlockStart(lines[i])) {
+          para.push(lines[i]);
+          i++;
+        }
+        out.push(`<p>${inlineBlock(para)}</p>`);
+      }
+
+      return out.join('');
+    }
+
+    return renderBlocks(text.split('\n'));
   }
 
   if (typeof module !== 'undefined' && module.exports) {

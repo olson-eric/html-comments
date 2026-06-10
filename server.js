@@ -200,7 +200,7 @@ function markdownDocument(f) {
 </style>
 </head>
 <body>
-${renderMarkdown(md)}
+${renderMarkdown(md, { breaks: false })}
 </body>
 </html>
 `;
