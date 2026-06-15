@@ -92,8 +92,7 @@ async function bootstrap() {
   lastCommentsEtag = JSON.stringify(state.comments);
   lastDocModifiedAt = state.meta.modifiedAt;
   document.getElementById('page-title').textContent = state.meta.title;
-  const pathEl = document.getElementById('page-path');
-  if (pathEl) pathEl.textContent = state.meta.path;
+  renderBreadcrumb();
   document.title = `${state.meta.title} — html-comments`;
 
   if (isImageDoc()) {
@@ -110,6 +109,187 @@ async function bootstrap() {
 
   setInterval(pollComments, POLL_COMMENTS_MS);
   setInterval(pollDocument, POLL_DOC_MS);
+}
+
+// Breadcrumb: each folder segment of the current file's path is clickable and
+// opens a dropdown of that folder's contents, so you can jump to a sibling file
+// (or drill into a subfolder) without returning to the home screen.
+let treeCache = null;
+
+async function getTree(force) {
+  if (treeCache && !force) return treeCache;
+  try {
+    const res = await fetch('/api/tree');
+    if (!res.ok) return treeCache;
+    treeCache = await res.json();
+  } catch {}
+  return treeCache;
+}
+
+function findDirNode(tree, relDir) {
+  if (!tree) return null;
+  if (!relDir) return tree;
+  let node = tree;
+  for (const seg of relDir.split('/')) {
+    if (!node || !node.children) return null;
+    node = node.children.find((c) => c.type === 'dir' && c.name === seg);
+  }
+  return node || null;
+}
+
+async function renderBreadcrumb() {
+  const el = document.getElementById('page-path');
+  if (!el) return;
+  const tree = await getTree();
+  el.innerHTML = '';
+  const parts = state.meta.path.split('/');
+  const fileName = parts.pop();
+  const rootName = (tree && tree.name) || 'root';
+
+  el.appendChild(makeCrumb(rootName, ''));
+  let dir = '';
+  for (const seg of parts) {
+    el.appendChild(makeSeparator());
+    dir = dir ? `${dir}/${seg}` : seg;
+    el.appendChild(makeCrumb(seg, dir));
+  }
+  el.appendChild(makeSeparator());
+  const cur = document.createElement('span');
+  cur.className = 'crumb crumb-current';
+  cur.textContent = fileName;
+  el.appendChild(cur);
+}
+
+function makeSeparator() {
+  const sep = document.createElement('span');
+  sep.className = 'crumb-sep';
+  sep.textContent = '/';
+  sep.setAttribute('aria-hidden', 'true');
+  return sep;
+}
+
+function makeCrumb(label, dir) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'crumb crumb-dir';
+  btn.textContent = label;
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFolderMenu(btn, dir);
+  });
+  return btn;
+}
+
+let openMenu = null;
+
+function closeFolderMenu() {
+  if (openMenu) {
+    openMenu.remove();
+    openMenu = null;
+  }
+  document.removeEventListener('click', onDocClickForMenu, true);
+  document.removeEventListener('keydown', onKeydownForMenu, true);
+}
+
+function onDocClickForMenu(e) {
+  if (openMenu && !openMenu.contains(e.target)) closeFolderMenu();
+}
+
+function onKeydownForMenu(e) {
+  if (e.key === 'Escape') closeFolderMenu();
+}
+
+async function toggleFolderMenu(btn, dir) {
+  // Clicking the same crumb again closes the menu.
+  if (openMenu && openMenu._anchor === btn) {
+    closeFolderMenu();
+    return;
+  }
+  closeFolderMenu();
+  const tree = await getTree(true);
+  const node = findDirNode(tree, dir);
+  if (!node) return;
+  const menu = document.createElement('div');
+  menu.className = 'folder-menu';
+  menu._anchor = btn;
+  document.body.appendChild(menu);
+  openMenu = menu;
+  buildFolderMenu(menu, node, []);
+  setTimeout(() => {
+    document.addEventListener('click', onDocClickForMenu, true);
+    document.addEventListener('keydown', onKeydownForMenu, true);
+  }, 0);
+}
+
+function buildFolderMenu(menu, node, stack) {
+  menu.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'folder-menu-head';
+  if (stack.length) {
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'folder-menu-back';
+    back.textContent = '‹';
+    back.title = 'Back';
+    back.addEventListener('click', (e) => {
+      e.stopPropagation();
+      buildFolderMenu(menu, stack[stack.length - 1], stack.slice(0, -1));
+    });
+    head.appendChild(back);
+  }
+  const title = document.createElement('span');
+  title.className = 'folder-menu-title';
+  title.textContent = node.name || 'root';
+  head.appendChild(title);
+  menu.appendChild(head);
+
+  const list = document.createElement('div');
+  list.className = 'folder-menu-list';
+  const children = node.children || [];
+  if (!children.length) {
+    const empty = document.createElement('div');
+    empty.className = 'folder-menu-empty muted';
+    empty.textContent = 'No files in this folder.';
+    list.appendChild(empty);
+  }
+  for (const child of children) {
+    if (child.type === 'dir') {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'folder-menu-item';
+      row.innerHTML = `<span class="mi-icon">📁</span><span class="mi-name">${escapeHtml(child.name)}</span><span class="mi-chev">›</span>`;
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        buildFolderMenu(menu, child, [...stack, node]);
+      });
+      list.appendChild(row);
+    } else {
+      list.appendChild(makeMenuFile(child));
+    }
+  }
+  menu.appendChild(list);
+  if (openMenu === menu) positionMenu(menu, menu._anchor);
+}
+
+function makeMenuFile(node) {
+  const a = document.createElement('a');
+  a.className = 'folder-menu-item' + (node.path === state.meta.path ? ' current' : '');
+  a.href = `/v?path=${encodeURIComponent(node.path)}`;
+  const icon = { html: '📄', markdown: '📝', image: '🖼️' }[node.kind] || '📄';
+  const badge = node.openCount > 0
+    ? `<span class="badge badge-open" title="${node.openCount} open / ${node.commentCount} total">${node.openCount}</span>`
+    : node.commentCount > 0
+      ? `<span class="badge badge-resolved" title="${node.commentCount} comment(s), all resolved">${node.commentCount}</span>`
+      : '';
+  a.innerHTML = `<span class="mi-icon">${icon}</span><span class="mi-name">${escapeHtml(node.name)}</span>${badge}`;
+  return a;
+}
+
+function positionMenu(menu, anchorBtn) {
+  const r = anchorBtn.getBoundingClientRect();
+  menu.style.top = `${r.bottom + 4}px`;
+  const maxLeft = window.innerWidth - menu.offsetWidth - 8;
+  menu.style.left = `${Math.max(8, Math.min(r.left, maxLeft))}px`;
 }
 
 function isImageDoc() {

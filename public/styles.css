@@ -271,6 +271,114 @@ body.viewer { height: 100vh; display: flex; flex-direction: column; overflow: hi
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Clickable folder breadcrumb (each segment opens a folder dropdown) */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  min-width: 0;
+}
+.breadcrumb .crumb,
+.breadcrumb .crumb-sep {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.breadcrumb .crumb-sep { color: var(--muted); opacity: 0.55; }
+button.crumb-dir {
+  background: none;
+  border: none;
+  margin: 0;
+  padding: 0.05rem 0.25rem;
+  border-radius: 4px;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+button.crumb-dir:hover { background: var(--row-hover); }
+.breadcrumb .crumb-current {
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Folder dropdown menu */
+.folder-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 220px;
+  max-width: 360px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  font-size: 0.85rem;
+}
+.folder-menu-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.folder-menu-back {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 0 0.45rem;
+  font-size: 1rem;
+  line-height: 1.3;
+  cursor: pointer;
+}
+.folder-menu-back:hover { background: var(--row-hover); }
+.folder-menu-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-menu-list {
+  overflow-y: auto;
+  padding: 0.25rem;
+}
+.folder-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.folder-menu-item:hover { background: var(--row-hover); text-decoration: none; }
+.folder-menu-item.current { background: var(--row-hover); font-weight: 600; }
+.folder-menu-item .mi-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-menu-item .mi-chev { color: var(--muted); }
+.folder-menu-empty { padding: 0.5rem; }
 .viewer-actions { display: flex; align-items: center; gap: 0.5rem; }
 .author-input,
 .toggle {
