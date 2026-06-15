@@ -77,6 +77,50 @@ button.theme-toggle {
   line-height: 1;
 }
 
+/* Copy-link button: swaps "Copy link" for an animated checkmark on success. */
+#copy-link {
+  position: relative;
+  overflow: hidden;
+}
+#copy-link .copy-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+#copy-link .copy-state--done {
+  position: absolute;
+  inset: 0;
+  justify-content: center;
+  opacity: 0;
+  transform: translateY(0.5rem);
+}
+#copy-link.copied .copy-state--idle {
+  opacity: 0;
+  transform: translateY(-0.5rem);
+}
+#copy-link.copied .copy-state--done {
+  opacity: 1;
+  transform: translateY(0);
+}
+#copy-link .copy-check path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+}
+#copy-link.copied .copy-check path {
+  animation: copy-check-draw 0.32s ease forwards 0.08s;
+}
+@keyframes copy-check-draw {
+  to { stroke-dashoffset: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #copy-link .copy-state { transition: opacity 0.18s ease; }
+  #copy-link .copy-state--idle,
+  #copy-link .copy-state--done { transform: none; }
+  #copy-link .copy-check path { stroke-dashoffset: 0; }
+  #copy-link.copied .copy-check path { animation: none; }
+}
+
 /* Home */
 .home-header {
   position: relative;

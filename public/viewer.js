@@ -34,14 +34,44 @@ const POLL_DOC_MS = 15000;
 let lastCommentsEtag = null;
 let lastDocModifiedAt = null;
 
-document.getElementById('copy-link').addEventListener('click', async () => {
+const copyLinkBtn = document.getElementById('copy-link');
+let copyResetTimer = null;
+copyLinkBtn.addEventListener('click', async () => {
+  const link = location.href;
+  let copied = false;
   try {
-    await navigator.clipboard.writeText(location.href);
-    flash('Link copied');
+    await navigator.clipboard.writeText(link);
+    copied = true;
   } catch (e) {
-    prompt('Copy this link', location.href);
+    copied = legacyCopy(link);
   }
+  if (!copied) return;
+  copyLinkBtn.classList.add('copied');
+  copyLinkBtn.setAttribute('aria-label', 'Link copied');
+  clearTimeout(copyResetTimer);
+  copyResetTimer = setTimeout(() => {
+    copyLinkBtn.classList.remove('copied');
+    copyLinkBtn.removeAttribute('aria-label');
+  }, 1800);
 });
+
+function legacyCopy(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    ta.style.pointerEvents = 'none';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
 
 filterSelect.addEventListener('change', renderSidebar);
 
