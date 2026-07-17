@@ -121,6 +121,47 @@ button.theme-toggle {
   #copy-link.copied .copy-check path { animation: none; }
 }
 
+.copy-link-wrap { position: relative; }
+.copy-link-popover {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 20;
+  width: 240px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.copy-link-popover label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.copy-link-popover input {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+}
+.copy-link-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.copy-link-popover #copy-link-confirm {
+  align-self: flex-end;
+  font-size: 0.85rem;
+}
+
 /* Home */
 .home-header {
   position: relative;

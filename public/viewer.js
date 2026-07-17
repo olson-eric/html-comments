@@ -35,9 +35,48 @@ let lastCommentsEtag = null;
 let lastDocModifiedAt = null;
 
 const copyLinkBtn = document.getElementById('copy-link');
+const copyLinkPopover = document.getElementById('copy-link-popover');
+const copyLinkNameInput = document.getElementById('copy-link-name');
+const copyLinkConfirmBtn = document.getElementById('copy-link-confirm');
 let copyResetTimer = null;
-copyLinkBtn.addEventListener('click', async () => {
-  const link = location.href;
+
+copyLinkBtn.addEventListener('click', () => {
+  if (!copyLinkPopover.hidden) {
+    closeCopyLinkPopover();
+    return;
+  }
+  copyLinkNameInput.value = localStorage.getItem('hc:lastRecipient') || '';
+  copyLinkPopover.hidden = false;
+  copyLinkNameInput.focus();
+  copyLinkNameInput.select();
+});
+
+copyLinkConfirmBtn.addEventListener('click', doCopyLink);
+copyLinkNameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doCopyLink();
+  else if (e.key === 'Escape') closeCopyLinkPopover();
+});
+
+document.addEventListener('click', (e) => {
+  if (copyLinkPopover.hidden) return;
+  if (e.target === copyLinkBtn || copyLinkBtn.contains(e.target)) return;
+  if (copyLinkPopover.contains(e.target)) return;
+  closeCopyLinkPopover();
+});
+
+function closeCopyLinkPopover() {
+  copyLinkPopover.hidden = true;
+}
+
+async function doCopyLink() {
+  const name = copyLinkNameInput.value.trim();
+  const url = new URL(location.origin + location.pathname);
+  url.searchParams.set('path', filePath);
+  if (name) {
+    url.searchParams.set('for', name);
+    localStorage.setItem('hc:lastRecipient', name);
+  }
+  const link = url.toString();
   let copied = false;
   try {
     await navigator.clipboard.writeText(link);
@@ -46,6 +85,7 @@ copyLinkBtn.addEventListener('click', async () => {
     copied = legacyCopy(link);
   }
   if (!copied) return;
+  closeCopyLinkPopover();
   copyLinkBtn.classList.add('copied');
   copyLinkBtn.setAttribute('aria-label', 'Link copied');
   clearTimeout(copyResetTimer);
@@ -53,7 +93,21 @@ copyLinkBtn.addEventListener('click', async () => {
     copyLinkBtn.classList.remove('copied');
     copyLinkBtn.removeAttribute('aria-label');
   }, 1800);
-});
+}
+
+applyRecipientName();
+
+function applyRecipientName() {
+  const recipient = new URLSearchParams(location.search).get('for');
+  if (!recipient) return;
+  if (!localStorage.getItem('hc:author')) {
+    authorInput.value = recipient;
+    localStorage.setItem('hc:author', recipient);
+  }
+  const url = new URL(location.href);
+  url.searchParams.delete('for');
+  history.replaceState(null, '', url.toString());
+}
 
 function legacyCopy(text) {
   try {
