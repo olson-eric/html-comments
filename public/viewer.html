@@ -37,15 +37,25 @@
           <span>You:</span>
           <input type="text" id="author" placeholder="Your name" />
         </label>
-        <button id="copy-link" type="button">
-          <span class="copy-state copy-state--idle">Copy link</span>
-          <span class="copy-state copy-state--done" aria-hidden="true">
-            <svg class="copy-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M5 13l4 4L19 7" />
-            </svg>
-            Copied
-          </span>
-        </button>
+        <div class="copy-link-wrap">
+          <button id="copy-link" type="button">
+            <span class="copy-state copy-state--idle">Copy link</span>
+            <span class="copy-state copy-state--done" aria-hidden="true">
+              <svg class="copy-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5 13l4 4L19 7" />
+              </svg>
+              Copied
+            </span>
+          </button>
+          <div id="copy-link-popover" class="copy-link-popover" hidden>
+            <label>
+              <span>Link is for</span>
+              <input type="text" id="copy-link-name" placeholder="Recipient's name (optional)" autocomplete="off" />
+            </label>
+            <p class="copy-link-hint">Their comments will default to this name instead of Anonymous.</p>
+            <button id="copy-link-confirm" type="button">Copy link</button>
+          </div>
+        </div>
         <button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle dark mode">🌙</button>
       </div>
     </header>
