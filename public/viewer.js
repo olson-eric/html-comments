@@ -420,6 +420,9 @@ function injectFrameHooks() {
     .hc-highlight { background: rgba(255, 213, 79, 0.55); border-bottom: 2px solid rgba(255, 152, 0, 0.7); cursor: pointer; transition: background 0.15s; }
     .hc-highlight.hc-resolved { background: rgba(200, 200, 200, 0.25); border-bottom: 2px solid rgba(120, 120, 120, 0.4); }
     .hc-highlight.hc-active { background: rgba(255, 152, 0, 0.6); }
+    svg .hc-highlight { fill: #6b4a00; stroke: rgba(255, 213, 79, 0.9); stroke-width: 3px; paint-order: stroke; stroke-linejoin: round; }
+    svg .hc-highlight.hc-resolved { fill: inherit; stroke: rgba(150, 150, 150, 0.45); }
+    svg .hc-highlight.hc-active { stroke: rgba(255, 152, 0, 0.9); }
     body { padding-bottom: 4rem; }
   `;
   doc.head && doc.head.appendChild(style);
@@ -867,14 +870,21 @@ function applyHighlight(root, comment, startIdx, length) {
   }
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
 function wrapTextNodeRange(node, start, end, comment) {
   const doc = node.ownerDocument;
   const text = node.nodeValue;
   const before = text.slice(0, start);
   const middle = text.slice(start, end);
   const after = text.slice(end);
-  const span = doc.createElement('span');
-  span.className = 'hc-highlight' + (comment.resolved ? ' hc-resolved' : '');
+  // Inside inline SVG an HTML <span> is foreign content the SVG renderer
+  // won't draw, which makes the wrapped text vanish — use a <tspan> there.
+  const inSvgText = node.parentNode.namespaceURI === SVG_NS;
+  const span = inSvgText ? doc.createElementNS(SVG_NS, 'tspan') : doc.createElement('span');
+  // setAttribute, not .className — on SVG elements className is a read-only
+  // SVGAnimatedString and plain assignment is silently ignored.
+  span.setAttribute('class', 'hc-highlight' + (comment.resolved ? ' hc-resolved' : ''));
   span.dataset.commentId = comment.id;
   span.textContent = middle;
   const parent = node.parentNode;
