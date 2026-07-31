@@ -185,8 +185,16 @@ function readComments(relPath) {
   }
 }
 
+// All JSON persistence goes through a temp-file-plus-rename so a crash
+// mid-write can't leave a truncated file behind.
+function writeJsonAtomic(file, value) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+  fs.renameSync(tmp, file);
+}
+
 function writeComments(relPath, data) {
-  fs.writeFileSync(commentsFile(relPath), JSON.stringify({ ...data, path: relPath }, null, 2));
+  writeJsonAtomic(commentsFile(relPath), { ...data, path: relPath });
 }
 
 function extractTitle(html) {
