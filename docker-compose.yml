@@ -4,8 +4,13 @@ services:
     image: html-comments:latest
     ports:
       - "${PORT:-4747}:4747"
+    environment:
+      # Optional path prefix to mount the app under, e.g. /reviews
+      BASE_PATH: "${BASE_PATH:-}"
     volumes:
-      # Directory of .html/.md/image files to serve (read-only is fine)
+      # Directory of .html/.md/image files to serve (read-only is fine).
+      # Defaults to the sample ./html directory in this repo — point HTML_DIR
+      # at your own files.
       - ${HTML_DIR:-./html}:/content:ro
       # Comment JSON persists here across container restarts
       - comments:/comments

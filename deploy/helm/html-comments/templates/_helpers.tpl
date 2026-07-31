@@ -41,6 +41,17 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
+Name of the ServiceAccount the pod runs as.
+*/}}
+{{- define "html-comments.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "html-comments.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
+{{- end }}
+
+{{/*
 Selector labels
 */}}
 {{- define "html-comments.selectorLabels" -}}

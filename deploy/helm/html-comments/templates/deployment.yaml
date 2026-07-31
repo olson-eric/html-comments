@@ -28,6 +28,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      serviceAccountName: {{ include "html-comments.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -51,13 +52,15 @@ spec:
             - name: http
               containerPort: 4747
               protocol: TCP
+          # /health is served at the root regardless of BASE_PATH, so the
+          # probes keep working when the app is mounted under a prefix.
           livenessProbe:
             httpGet:
-              path: /api/root
+              path: /health
               port: http
           readinessProbe:
             httpGet:
-              path: /api/root
+              path: /health
               port: http
           {{- with .Values.resources }}
           resources:
@@ -69,6 +72,12 @@ spec:
               readOnly: {{ .Values.content.readOnly }}
             - name: comments
               mountPath: /comments
+            {{- with .Values.extraVolumeMounts }}
+            {{- tpl (toYaml .) $ | nindent 12 }}
+            {{- end }}
+        {{- with .Values.extraContainers }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- end }}
       volumes:
         - name: content
           {{- if .Values.content.existingClaim }}
@@ -88,6 +97,9 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- tpl (toYaml .) $ | nindent 8 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

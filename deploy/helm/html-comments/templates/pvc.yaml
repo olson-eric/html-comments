@@ -5,6 +5,11 @@ metadata:
   name: {{ include "html-comments.fullname" . }}-comments
   labels:
     {{- include "html-comments.labels" . | nindent 4 }}
+  {{- if .Values.comments.persistence.keepOnUninstall }}
+  # Keep the comment data when the release is uninstalled.
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
 spec:
   accessModes:
     {{- toYaml .Values.comments.persistence.accessModes | nindent 4 }}

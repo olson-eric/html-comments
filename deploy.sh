@@ -58,6 +58,13 @@ push() {
   build
   docker push "$(full_image)"
   echo "Pushed $(full_image)"
+  # Also publish :latest as a convenience alias; the SHA tag stays primary.
+  if [ "$TAG" != "latest" ]; then
+    local latest="${REGISTRY%/}/${IMAGE}:latest"
+    docker tag "$(full_image)" "$latest"
+    docker push "$latest"
+    echo "Pushed $latest"
+  fi
 }
 
 helm_deploy() {

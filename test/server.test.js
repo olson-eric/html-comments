@@ -69,6 +69,12 @@ test('HTTP routes', async (t) => {
   const base = `http://127.0.0.1:${server.address().port}`;
   t.after(() => server.close());
 
+  await t.test('health endpoint responds at the root', async () => {
+    const res = await fetch(`${base}/health`);
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(await res.json(), { ok: true });
+  });
+
   await t.test('tree exposes extension-free path plus real file name', async () => {
     const tree = await (await fetch(`${base}/api/tree`)).json();
     const notes = tree.children.find((c) => c.name === 'notes.md');
@@ -162,6 +168,14 @@ test('BASE_PATH mounts the whole app under a prefix', async (t) => {
 
   const md = await fetch(`${base}/reviews/render/notes`);
   assert.match(await md.text(), /<base href="\/reviews\/raw\/">/);
+
+  // Health must stay reachable at the root (what container healthchecks and
+  // k8s probes hit), and also exist under the prefix.
+  const health = await fetch(`${base}/health`);
+  assert.strictEqual(health.status, 200);
+  assert.deepStrictEqual(await health.json(), { ok: true });
+  const prefixedHealth = await fetch(`${base}/reviews/health`);
+  assert.strictEqual(prefixedHealth.status, 200);
 });
 
 after(() => {

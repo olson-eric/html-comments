@@ -21,7 +21,8 @@ RUN mkdir -p /content /comments && chown node:node /content /comments
 USER node
 EXPOSE 4747
 
+# /health is always served at the root, even with BASE_PATH set.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO /dev/null "http://127.0.0.1:${PORT}/api/root" || exit 1
+  CMD wget -qO /dev/null "http://127.0.0.1:${PORT}/health" || exit 1
 
 CMD ["node", "server.js"]
