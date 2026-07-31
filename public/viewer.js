@@ -43,18 +43,27 @@ let lastCommentsEtag = null;
 let lastDocModifiedAt = null;
 
 const copyLinkBtn = document.getElementById('copy-link');
+const copyLinkArrow = document.getElementById('copy-link-arrow');
 const copyLinkPopover = document.getElementById('copy-link-popover');
 const copyLinkNameInput = document.getElementById('copy-link-name');
 const copyLinkConfirmBtn = document.getElementById('copy-link-confirm');
 let copyResetTimer = null;
 
+// Split button: the main button copies the link as-is; the arrow opens a
+// popover to address the link to a specific recipient.
 copyLinkBtn.addEventListener('click', () => {
+  closeCopyLinkPopover();
+  copyLink('');
+});
+
+copyLinkArrow.addEventListener('click', () => {
   if (!copyLinkPopover.hidden) {
     closeCopyLinkPopover();
     return;
   }
   copyLinkNameInput.value = localStorage.getItem('hc:lastRecipient') || '';
   copyLinkPopover.hidden = false;
+  copyLinkArrow.setAttribute('aria-expanded', 'true');
   copyLinkNameInput.focus();
   copyLinkNameInput.select();
 });
@@ -67,17 +76,21 @@ copyLinkNameInput.addEventListener('keydown', (e) => {
 
 document.addEventListener('click', (e) => {
   if (copyLinkPopover.hidden) return;
-  if (e.target === copyLinkBtn || copyLinkBtn.contains(e.target)) return;
+  if (e.target === copyLinkArrow || copyLinkArrow.contains(e.target)) return;
   if (copyLinkPopover.contains(e.target)) return;
   closeCopyLinkPopover();
 });
 
 function closeCopyLinkPopover() {
   copyLinkPopover.hidden = true;
+  copyLinkArrow.setAttribute('aria-expanded', 'false');
 }
 
-async function doCopyLink() {
-  const name = copyLinkNameInput.value.trim();
+function doCopyLink() {
+  copyLink(copyLinkNameInput.value.trim());
+}
+
+async function copyLink(name) {
   const url = new URL(`v/${encodePath(filePath)}`, document.baseURI);
   if (name) {
     url.searchParams.set('for', name);

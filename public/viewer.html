@@ -38,15 +38,22 @@
           <input type="text" id="author" placeholder="Your name" />
         </label>
         <div class="copy-link-wrap">
-          <button id="copy-link" type="button">
-            <span class="copy-state copy-state--idle">Copy link</span>
-            <span class="copy-state copy-state--done" aria-hidden="true">
-              <svg class="copy-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M5 13l4 4L19 7" />
+          <div class="copy-link-split">
+            <button id="copy-link" type="button">
+              <span class="copy-state copy-state--idle">Copy link</span>
+              <span class="copy-state copy-state--done" aria-hidden="true">
+                <svg class="copy-check" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M5 13l4 4L19 7" />
+                </svg>
+                Copied
+              </span>
+            </button>
+            <button id="copy-link-arrow" type="button" aria-label="Copy link for a specific recipient" aria-haspopup="true" aria-expanded="false">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 9l6 6 6-6" />
               </svg>
-              Copied
-            </span>
-          </button>
+            </button>
+          </div>
           <div id="copy-link-popover" class="copy-link-popover" hidden>
             <label>
               <span>Link is for</span>
