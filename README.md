@@ -177,7 +177,8 @@ Deployment artifacts live in the repo root and `deploy/`:
 - **`Dockerfile`** — runs as the non-root `node` user. Mount your files at `/content` (read-only is fine) and a writable volume at `/comments` for comment persistence. Ships a healthcheck against `/health`, which is always served at the server root — healthchecks and probes keep working when `BASE_PATH` is set.
 - **`docker-compose.yml`** — one-liner local/server deployment: `HTML_DIR=/path/to/files docker compose up -d`. Comments persist in a named volume. `BASE_PATH` is passed through, and `HTML_DIR` defaults to the sample `html/` directory in this repo so a bare `docker compose up` works.
 - **`deploy/helm/html-comments`** — Helm chart with Service, optional Ingress, and a PVC for comments. The served directory can come from an existing PVC (`content.existingClaim`), a `content.hostPath`, or default to an emptyDir you copy files into. Keep `replicaCount: 1` — comments are JSON files on disk, not multi-writer safe. Liveness/readiness probes hit `/health` and are `BASE_PATH`-agnostic.
-- **`deploy.sh`** — wrapper for the common flows. `push` publishes the git-SHA tag (primary) and a `:latest` alias.
+- **`deploy.sh`** — wrapper for the common flows. `push` publishes the git-SHA tag (primary) and a `:latest` alias. `run` honors `UPLOADS_ENABLED=1` (mounts the content dir writable and passes the upload/identity env through).
+- **`Makefile`** — the same flows as one-word targets: `make docker-run`, `make docker-run-writable`, `make compose-up-writable`, `make test`, … (`make help` lists them).
 
 ```bash
 # Build + run locally in Docker
@@ -212,7 +213,8 @@ Remember there is no built-in authentication (see below) — keep deployments on
 
 To enable HTTP publishing (uploads, rename, archive) on a hosted deployment:
 
-- **docker-compose**: `UPLOADS_ENABLED=1 CONTENT_MODE=rw docker compose up -d` (the content mount must be writable).
+- **Local trial**: `make docker-run-writable` builds the image and runs it with uploads enabled and the content mount writable (`HTML_DIR=/path/to/files` to point it at your own directory); `make run-writable` does the same without Docker. `make help` lists all targets.
+- **docker-compose**: `UPLOADS_ENABLED=1 CONTENT_MODE=rw docker compose up -d` (the content mount must be writable) — or `make compose-up-writable`.
 - **Helm**: set `content.readOnly: false` and `env.UPLOADS_ENABLED: "1"`; add `env.TRUST_IDENTITY_HEADER: "X-Forwarded-Email"` (or whatever your auth proxy sets) so uploads and comments are attributed to the signed-in user.
 
 Be deliberate about the access model — the app itself has no auth, so the deployment provides it in two layers:

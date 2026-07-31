@@ -14,6 +14,10 @@
 #   TAG        Image tag                    (default: git short SHA, or "latest")
 #   REGISTRY   Registry prefix for push, e.g. ghcr.io/olson-eric (required for push)
 #   PORT       Host port for `run`          (default: 4747)
+#   UPLOADS_ENABLED        For `run`: enable the upload/rename/archive API and
+#                          mount the content dir writable (default: off, ro)
+#   UPLOAD_MAX_BYTES       For `run`: upload size cap passthrough
+#   TRUST_IDENTITY_HEADER  For `run`: identity header passthrough
 #   RELEASE    Helm release name            (default: html-comments)
 #   NAMESPACE  Kubernetes namespace         (default: html-comments)
 #   HELM_ARGS  Extra args appended to helm upgrade, e.g. "-f my-values.yaml"
@@ -45,10 +49,21 @@ run() {
   build
   local html_dir
   html_dir=$(cd "${1:-./html}" && pwd) || { echo "html dir not found: ${1:-./html}" >&2; exit 1; }
-  echo "Serving ${html_dir} on http://localhost:${PORT}"
+  # Writable mode: UPLOADS_ENABLED=1 mounts the content dir rw and passes the
+  # upload/identity env through, so publishing and rename/archive work.
+  local mode=ro
+  local envargs=()
+  if [ -n "${UPLOADS_ENABLED:-}" ]; then
+    mode=rw
+    envargs+=(-e "UPLOADS_ENABLED=${UPLOADS_ENABLED}")
+  fi
+  [ -n "${UPLOAD_MAX_BYTES:-}" ] && envargs+=(-e "UPLOAD_MAX_BYTES=${UPLOAD_MAX_BYTES}")
+  [ -n "${TRUST_IDENTITY_HEADER:-}" ] && envargs+=(-e "TRUST_IDENTITY_HEADER=${TRUST_IDENTITY_HEADER}")
+  echo "Serving ${html_dir} (${mode}) on http://localhost:${PORT}"
   docker run --rm --init \
     -p "${PORT}:4747" \
-    -v "${html_dir}:/content:ro" \
+    ${envargs[@]+"${envargs[@]}"} \
+    -v "${html_dir}:/content:${mode}" \
     -v html-comments-data:/comments \
     "$(full_image)"
 }
@@ -89,7 +104,7 @@ case "${1:-}" in
   helm)           helm_deploy ;;
   helm-uninstall) helm_uninstall ;;
   *)
-    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
