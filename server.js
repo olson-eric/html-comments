@@ -202,7 +202,7 @@ function writeFileAtomic(file, buf) {
   fs.renameSync(tmp, file);
 }
 
-function buildTree(absDir, relDir = '') {
+function buildTree(absDir, relDir = '', archived = readArchived()) {
   let entries;
   try {
     entries = fs.readdirSync(absDir, { withFileTypes: true });
@@ -215,12 +215,12 @@ function buildTree(absDir, relDir = '') {
     const childRel = relDir ? `${relDir}/${e.name}` : e.name;
     const childAbs = path.join(absDir, e.name);
     if (e.isDirectory()) {
-      const sub = buildTree(childAbs, childRel);
+      const sub = buildTree(childAbs, childRel, archived);
       if (sub.children.length) children.push(sub);
     } else if (e.isFile() && fileKind(e.name)) {
       const data = readComments(childRel);
       const open = data.comments.filter((c) => !c.resolved).length;
-      children.push({
+      const node = {
         name: e.name,
         path: docPathFor(childRel),
         file: childRel,
@@ -228,7 +228,9 @@ function buildTree(absDir, relDir = '') {
         kind: fileKind(e.name),
         commentCount: data.comments.length,
         openCount: open,
-      });
+      };
+      if (archived.has(childRel)) node.archived = true;
+      children.push(node);
     }
   }
   children.sort((a, b) => {
@@ -265,6 +267,46 @@ function writeJsonAtomic(file, value) {
 
 function writeComments(relPath, data) {
   writeJsonAtomic(commentsFile(relPath), { ...data, path: relPath });
+}
+
+// Archive is a metadata flag, not a move: the file, its doc path, shared
+// links, and comment threads all stay put; the tree just marks it archived
+// and the UI hides it behind a toggle. Stored as real relative filenames.
+const ARCHIVE_FILE = path.join(COMMENTS_DIR, 'archived.json');
+
+function readArchived() {
+  try {
+    return new Set(JSON.parse(fs.readFileSync(ARCHIVE_FILE, 'utf8')).files);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeArchived(set) {
+  writeJsonAtomic(ARCHIVE_FILE, { files: [...set].sort() });
+}
+
+// Renames leave tombstones (old doc path → new doc path) so links pasted
+// into chat before a rename keep working: /v/<old> redirects to /v/<new>.
+const TOMBSTONES_FILE = path.join(COMMENTS_DIR, 'tombstones.json');
+
+function readTombstones() {
+  try {
+    return JSON.parse(fs.readFileSync(TOMBSTONES_FILE, 'utf8')).moves || {};
+  } catch {
+    return {};
+  }
+}
+
+function recordMove(oldDoc, newDoc) {
+  const moves = readTombstones();
+  // Repoint older tombstones at the newest location so redirects stay one hop.
+  for (const [k, v] of Object.entries(moves)) {
+    if (v === oldDoc) moves[k] = newDoc;
+  }
+  moves[oldDoc] = newDoc;
+  delete moves[newDoc]; // the target exists again; no redirect wanted
+  writeJsonAtomic(TOMBSTONES_FILE, { moves });
 }
 
 // Append-only activity log so agents can poll one endpoint instead of
@@ -442,6 +484,7 @@ router.get('/api/file', (req, res) => {
     title: fileTitle(f),
     size: stat.size,
     modifiedAt: stat.mtime.toISOString(),
+    archived: readArchived().has(f.rel) || undefined,
     comments: data.comments,
   });
 });
@@ -634,6 +677,116 @@ router.delete(/^\/api\/upload\/(.+)$/, requireUploads, (req, res) => {
   res.json({ ok: true, path: f.doc, file: f.rel });
 });
 
+// Validate a destination directory path (for folder renames): inside the
+// root, no hidden segments — same rules as upload targets minus the file-kind
+// requirement.
+function resolveDirTarget(relPath) {
+  if (typeof relPath !== 'string' || !relPath) return null;
+  if (path.isAbsolute(relPath)) return null;
+  const norm = path.posix.normalize(relPath.replace(/\\/g, '/'));
+  if (norm.startsWith('..') || norm.includes('/../') || norm === '.') return null;
+  if (norm.split('/').some((seg) => !seg || seg.startsWith('.') || seg === 'node_modules')) return null;
+  const abs = path.resolve(ROOT, norm);
+  if (abs === ROOT || !abs.startsWith(ROOT + path.sep)) return null;
+  return { abs, rel: norm };
+}
+
+function migrateFileMeta(oldRel, newRel, archived) {
+  const oldComments = commentsFile(oldRel);
+  if (fs.existsSync(oldComments)) {
+    const data = readComments(oldRel);
+    writeComments(newRel, data);
+    fs.unlinkSync(oldComments);
+  }
+  if (archived.delete(oldRel)) archived.add(newRel);
+}
+
+function listSupportedFiles(absDir, relDir) {
+  const out = [];
+  for (const e of fs.readdirSync(absDir, { withFileTypes: true })) {
+    if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+    const rel = `${relDir}/${e.name}`;
+    if (e.isDirectory()) out.push(...listSupportedFiles(path.join(absDir, e.name), rel));
+    else if (e.isFile() && fileKind(e.name)) out.push(rel);
+  }
+  return out;
+}
+
+// Rename/move a file or folder. Comment stores are keyed by relative path, so
+// they migrate with the move, and the old doc path gets a tombstone so links
+// shared before the rename redirect to the new location.
+router.post('/api/move', requireUploads, (req, res) => {
+  const { from, to } = req.body || {};
+  if (typeof from !== 'string' || typeof to !== 'string' || !from || !to) {
+    return res.status(400).json({ error: 'from and to required' });
+  }
+  const who = identityFor(req) || undefined;
+  const archived = readArchived();
+
+  const f = resolveFile(from);
+  if (f) {
+    const target = resolveUploadTarget(to);
+    if (!target) {
+      return res.status(400).json({ error: 'invalid destination: must stay inside the served root, contain no hidden segments, and end in a supported extension' });
+    }
+    if (fs.existsSync(target.abs)) return res.status(409).json({ error: 'destination already exists' });
+    fs.mkdirSync(path.dirname(target.abs), { recursive: true });
+    fs.renameSync(f.abs, target.abs);
+    migrateFileMeta(f.rel, target.rel, archived);
+    writeArchived(archived);
+    const newDoc = docPathFor(target.rel);
+    if (newDoc !== f.doc) recordMove(f.doc, newDoc);
+    audit(req, 'move', `${f.rel} -> ${target.rel}`);
+    recordEvent('moved', { doc: newDoc, rel: target.rel }, { from: f.doc, author: who });
+    return res.json({ path: newDoc, file: target.rel, from: f.doc });
+  }
+
+  // Folder move: every descendant migrates its comment store, archive flag,
+  // and tombstone.
+  const src = resolveDirTarget(from);
+  if (!src || !fs.existsSync(src.abs) || !fs.statSync(src.abs).isDirectory()) {
+    return res.status(404).json({ error: 'not found' });
+  }
+  const dst = resolveDirTarget(to);
+  if (!dst) {
+    return res.status(400).json({ error: 'invalid destination: must stay inside the served root and contain no hidden segments' });
+  }
+  if (fs.existsSync(dst.abs)) return res.status(409).json({ error: 'destination already exists' });
+  if ((dst.rel + '/').startsWith(src.rel + '/')) {
+    return res.status(400).json({ error: 'cannot move a folder into itself' });
+  }
+  const oldDocs = new Map(listSupportedFiles(src.abs, src.rel).map((rel) => [rel, docPathFor(rel)]));
+  fs.mkdirSync(path.dirname(dst.abs), { recursive: true });
+  fs.renameSync(src.abs, dst.abs);
+  for (const [oldRel, oldDoc] of oldDocs) {
+    const newRel = dst.rel + oldRel.slice(src.rel.length);
+    migrateFileMeta(oldRel, newRel, archived);
+    const newDoc = docPathFor(newRel);
+    if (newDoc !== oldDoc) recordMove(oldDoc, newDoc);
+  }
+  writeArchived(archived);
+  audit(req, 'move', `${src.rel}/ -> ${dst.rel}/`);
+  recordEvent('moved', { doc: dst.rel, rel: dst.rel }, { from: src.rel, folder: true, author: who });
+  res.json({ path: dst.rel, from: src.rel, folder: true });
+});
+
+// Archive / unarchive a file. A flag, not a move — the path, shared links,
+// and comments are untouched; the tree reports archived:true and the UI
+// hides it behind a "Show archived" toggle.
+router.post('/api/archive', requireUploads, (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  const flag = (req.body || {}).archived;
+  if (typeof flag !== 'boolean') return res.status(400).json({ error: 'archived (boolean) required' });
+  const archived = readArchived();
+  if (flag) archived.add(f.rel);
+  else archived.delete(f.rel);
+  writeArchived(archived);
+  audit(req, flag ? 'archive' : 'unarchive', f.rel);
+  recordEvent(flag ? 'archived' : 'unarchived', f, { author: identityFor(req) || undefined });
+  res.json({ path: f.doc, file: f.rel, archived: flag });
+});
+
 router.get(/^\/raw\/(.+)$/, (req, res) => {
   let rel;
   try {
@@ -671,7 +824,15 @@ router.get(/^\/v\/(.+)$/, (req, res) => {
     return res.status(400).send('bad request');
   }
   const f = resolveFile(rel);
-  if (!f) return res.status(404).send('File not found');
+  if (!f) {
+    // Renamed? Follow the tombstone so links shared before a rename keep
+    // working.
+    const dest = readTombstones()[rel];
+    if (dest && resolveFile(dest)) {
+      return res.redirect(`${BASE_PATH}/v/${encodePath(dest)}${keepQuery(req)}`);
+    }
+    return res.status(404).send('File not found');
+  }
   if (rel !== f.doc) return res.redirect(`${BASE_PATH}/v/${encodePath(f.doc)}${keepQuery(req)}`);
   res.type('text/html; charset=utf-8').send(pageHtml('viewer.html'));
 });

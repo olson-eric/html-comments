@@ -36,6 +36,8 @@ With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or d
 
 When `TRUST_IDENTITY_HEADER` is configured, the destination is prefilled with your personal folder, derived from your signed-in identity (`eric.olson@corp.com` → `eric_olson/`). Nothing is created at login — the folder appears with your first upload.
 
+Hovering a row in the file tree shows two more actions: **rename/move** (✎ — old links redirect to the new location, comments come along) and **archive** (🗄 — hides the file behind a "Show archived" toggle without touching its link or comments; unarchive puts it back).
+
 ## Dark mode
 
 The app chrome (file browser, viewer, and comment sidebar) has a built-in dark
@@ -80,7 +82,7 @@ Files are identified by their extension-free doc path relative to the served roo
 | `GET` | `/health` | Liveness check, returns `{ "ok": true }` (also served un-prefixed at the root when `BASE_PATH` is set) |
 | `GET` | `/api/root` | Absolute path of the served root + configured `basePath` |
 | `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`image`) and comment counts |
-| `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Kinds: `created`, `replied`, `resolved`, `unresolved`, `deleted` (comment events) and `uploaded`, `removed` (file events). Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
+| `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Kinds: `created`, `replied`, `resolved`, `unresolved`, `deleted` (comment events) and `uploaded`, `removed`, `moved`, `archived`, `unarchived` (file events). Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
 | `GET` | `/api/file?path=...` | File metadata (incl. `kind`) + all comments |
 | `GET` | `/api/file/html?path=...` | The raw HTML; for markdown, the *rendered* HTML (the text anchors index into) |
 | `GET` | `/raw/<file>` | The file as-is, by real filename (use this for markdown source / image bytes / sibling assets) |
@@ -114,6 +116,13 @@ for f in *.png; do curl -s -X PUT --data-binary "@$f" "http://localhost:4747/api
 ```
 
 Upload paths get the same traversal protection as everything else, must end in a supported extension, may not contain hidden (`.`-prefixed) segments, and are capped at `UPLOAD_MAX_BYTES` (default 20 MB). Writes are atomic (temp file + rename). Each upload/delete is logged with the client address.
+
+The same flag enables rename and archive:
+
+| Method | Path | Body | Description |
+| --- | --- | --- | --- |
+| `POST` | `/api/move` | `{ from, to }` | Rename/move a file (`to` is a real filename with extension) or a whole folder. Comment threads are keyed by path, so they migrate with the move — and the old doc path gets a **tombstone**: viewer links shared before the rename redirect to the new location. Refuses to overwrite an existing destination (409). |
+| `POST` | `/api/archive?path=...` | `{ archived: true\|false }` | Flag a file archived (or un-archive it). A flag, not a move: the path, shared links, and comments are untouched; `/api/tree` reports `archived: true` and the UI hides it behind a "Show archived" toggle. |
 
 **Security caveat:** uploaded HTML runs its scripts same-origin when viewed, like any served page. Only enable uploads on deployments where everyone who can reach the service is trusted — behind your auth proxy or on a private network.
 

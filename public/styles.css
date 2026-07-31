@@ -796,3 +796,33 @@ button.linklike {
 .upload-list { list-style: none; padding: 0; margin: 0.5rem 0 0; font-size: 0.9rem; }
 .upload-list li { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.2rem 0; }
 .upload-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+
+/* ----- Tree row actions (rename / archive) ----- */
+.tree-actions { margin-left: auto; display: none; gap: 0.15rem; }
+.tree-row:hover .tree-actions { display: inline-flex; }
+.tree-action {
+  background: none;
+  border: none;
+  padding: 0 0.25rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1;
+}
+.tree-action:hover { color: var(--accent); }
+.tree-file-row.archived .tree-name { color: var(--muted); text-decoration: line-through; }
+.badge-archived {
+  background: var(--border);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.72rem;
+}
+.show-archived {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  cursor: pointer;
+}

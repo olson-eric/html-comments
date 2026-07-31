@@ -134,6 +134,88 @@ test('upload API', async (t) => {
   });
 });
 
+test('move and archive', async (t) => {
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  t.after(() => server.close());
+  const post = (url, body) =>
+    fetch(`${base}${url}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  await t.test('file rename migrates comments and leaves a redirecting tombstone', async () => {
+    await fetch(`${base}/api/upload/mv/old.md`, { method: 'PUT', body: '# Move me\n' });
+    await post('/api/file/comments?path=mv/old', { anchor: { startIdx: 0, length: 4, quote: 'Move' }, text: 'keep me', author: 'rev' });
+
+    const res = await post('/api/move', { from: 'mv/old', to: 'mv/new.md' });
+    assert.strictEqual(res.status, 200);
+    const out = await res.json();
+    assert.strictEqual(out.path, 'mv/new');
+    assert.strictEqual(fs.existsSync(path.join(ROOT, 'mv', 'new.md')), true);
+    assert.strictEqual(fs.existsSync(path.join(ROOT, 'mv', 'old.md')), false);
+
+    const comments = await (await fetch(`${base}/api/file/comments?path=mv/new`)).json();
+    assert.strictEqual(comments.comments.length, 1);
+    assert.strictEqual(comments.comments[0].text, 'keep me');
+
+    const redir = await fetch(`${base}/v/mv/old`, { redirect: 'manual' });
+    assert.strictEqual(redir.status, 302);
+    assert.strictEqual(redir.headers.get('location'), '/v/mv/new');
+  });
+
+  await t.test('rename onto an existing file is rejected', async () => {
+    await fetch(`${base}/api/upload/mv/taken.md`, { method: 'PUT', body: '# Taken\n' });
+    const res = await post('/api/move', { from: 'mv/new', to: 'mv/taken.md' });
+    assert.strictEqual(res.status, 409);
+  });
+
+  await t.test('folder rename migrates every descendant', async () => {
+    await fetch(`${base}/api/upload/team/docs/a.md`, { method: 'PUT', body: '# A\n' });
+    await fetch(`${base}/api/upload/team/docs/deep/b.md`, { method: 'PUT', body: '# B\n' });
+    await post('/api/file/comments?path=team/docs/a', { anchor: { startIdx: 0, length: 1, quote: 'A' }, text: 'on a', author: 'rev' });
+
+    const res = await post('/api/move', { from: 'team/docs', to: 'team/guides' });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(fs.existsSync(path.join(ROOT, 'team', 'guides', 'deep', 'b.md')), true);
+
+    const comments = await (await fetch(`${base}/api/file/comments?path=team/guides/a`)).json();
+    assert.strictEqual(comments.comments.length, 1);
+
+    const redir = await fetch(`${base}/v/team/docs/a`, { redirect: 'manual' });
+    assert.strictEqual(redir.status, 302);
+    assert.strictEqual(redir.headers.get('location'), '/v/team/guides/a');
+  });
+
+  await t.test('archive is a flag: link and comments stay, tree reports it', async () => {
+    await fetch(`${base}/api/upload/arch/done.md`, { method: 'PUT', body: '# Done\n' });
+    const res = await post('/api/archive?path=arch/done', { archived: true });
+    assert.strictEqual(res.status, 200);
+
+    const tree = await (await fetch(`${base}/api/tree`)).json();
+    const arch = tree.children.find((c) => c.name === 'arch');
+    assert.strictEqual(arch.children[0].archived, true);
+
+    // Still viewable and commentable at the same path.
+    assert.strictEqual((await fetch(`${base}/v/arch/done`)).status, 200);
+    const meta = await (await fetch(`${base}/api/file?path=arch/done`)).json();
+    assert.strictEqual(meta.archived, true);
+
+    const undo = await post('/api/archive?path=arch/done', { archived: false });
+    assert.strictEqual((await undo.json()).archived, false);
+    const tree2 = await (await fetch(`${base}/api/tree`)).json();
+    assert.strictEqual(tree2.children.find((c) => c.name === 'arch').children[0].archived, undefined);
+  });
+
+  await t.test('archive flag follows a rename', async () => {
+    await fetch(`${base}/api/upload/arch/keep.md`, { method: 'PUT', body: '# Keep\n' });
+    await post('/api/archive?path=arch/keep', { archived: true });
+    await post('/api/move', { from: 'arch/keep', to: 'arch/kept.md' });
+    const tree = await (await fetch(`${base}/api/tree`)).json();
+    const arch = tree.children.find((c) => c.name === 'arch');
+    const kept = arch.children.find((c) => c.name === 'kept.md');
+    assert.strictEqual(kept.archived, true);
+  });
+});
+
 test('change feed', async (t) => {
   const server = app.listen(0, '127.0.0.1');
   await once(server, 'listening');
