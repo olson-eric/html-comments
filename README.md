@@ -20,6 +20,14 @@ node server.js /path/to/your/html
 
 Then open `http://localhost:4747` and you'll see a file tree. Click a file to open it in the viewer, select text (or drag a box on an image), and leave comments.
 
+## URLs
+
+Every file is addressed by an **extension-free doc path**: `docs/spec.html` lives at `/v/docs/spec`. That's the URL the viewer uses and the one **Copy link** puts on your clipboard, so a pasted link never carries a file extension — an agent given `…/v/shots/screen` knows it's looking at a page in this service (comments, anchors, the JSON API) rather than mistaking the link for a bare `.png` to fetch or upload. Old-style `/v?path=docs/spec.html` links redirect to the new form.
+
+If two sibling files differ only by extension (`spec.html` and `spec.md`), the extension-free path resolves by kind priority (`.html`, `.htm`, `.md`, `.markdown`, then image extensions); the other file keeps its full name as its path and stays reachable that way.
+
+To host the app under a URL prefix (e.g. behind a shared cloud gateway or an S3-backed deployment where each project mounts at its own subpath), set `BASE_PATH=/some/prefix` — every page, API route, and asset is served under it, and the frontend uses only relative URLs so links keep working wherever the app is mounted.
+
 Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, hashed by relative path). Override with `COMMENTS_DIR=…` if you want them somewhere else.
 
 ## Dark mode
@@ -57,17 +65,17 @@ Comments are stored in `<html-dir>/.html-comments/<sha1-of-relpath>.json`, separ
 
 ## Agent API
 
-Files are identified by their path relative to the served root, passed as `?path=foo/bar.html`. All endpoints return JSON.
+Files are identified by their extension-free doc path relative to the served root, passed as `?path=docs/spec` — the same identifier that appears in viewer URLs (`/v/docs/spec`), so a pasted link maps 1:1 onto API calls. Real filenames (`?path=docs/spec.html`) are accepted too. Responses report both: `path` (the canonical doc path) and `file` (the real relative filename). All endpoints return JSON. With `BASE_PATH` set, prefix every route with it.
 
 ### Discovery
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/root` | Absolute path of the served root |
-| `GET` | `/api/tree` | Recursive tree of supported files, each with `kind` (`html`/`markdown`/`image`) and comment counts |
+| `GET` | `/api/root` | Absolute path of the served root + configured `basePath` |
+| `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`image`) and comment counts |
 | `GET` | `/api/file?path=...` | File metadata (incl. `kind`) + all comments |
 | `GET` | `/api/file/html?path=...` | The raw HTML; for markdown, the *rendered* HTML (the text anchors index into) |
-| `GET` | `/raw/<path>` | The file as-is (use this for markdown source / image bytes) |
+| `GET` | `/raw/<file>` | The file as-is, by real filename (use this for markdown source / image bytes / sibling assets) |
 | `GET` | `/render/<path>` | Markdown rendered as a standalone HTML page (what the viewer's iframe shows) |
 
 ### Comments
@@ -86,8 +94,8 @@ Files are identified by their path relative to the served root, passed as `?path
 # 1. Find files with open comments
 curl -s http://localhost:4747/api/tree | jq '..|.path? // empty'
 
-# 2. Read open comments for a file
-curl -s "http://localhost:4747/api/file/comments?path=docs/spec.html&status=open" | jq
+# 2. Read open comments for a file (extension-free path, same as the viewer URL)
+curl -s "http://localhost:4747/api/file/comments?path=docs/spec&status=open" | jq
 
 # Each comment includes anchor.quote (the highlighted text), text (the comment),
 # author, createdAt, replies, resolved. Comments on images have a region anchor
@@ -95,11 +103,11 @@ curl -s "http://localhost:4747/api/file/comments?path=docs/spec.html&status=open
 # as fractions (0..1) of the image.
 
 # 3. After acting on a comment, reply + resolve:
-curl -s -X POST "http://localhost:4747/api/file/comments/<cid>/replies?path=docs/spec.html" \
+curl -s -X POST "http://localhost:4747/api/file/comments/<cid>/replies?path=docs/spec" \
   -H 'Content-Type: application/json' \
   -d '{"text":"Fixed in commit abc123","author":"agent"}'
 
-curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec.html" \
+curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec" \
   -H 'Content-Type: application/json' \
   -d '{"resolved":true}'
 ```
@@ -108,6 +116,7 @@ curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec.h
 
 - `HTML_DIR` (or positional arg) — directory of files to serve. Required to exist.
 - `COMMENTS_DIR` (default `<html-dir>/.html-comments`) — where comment JSON is persisted.
+- `BASE_PATH` (default none) — path prefix to mount the whole app under, e.g. `/reviews`.
 - `PORT` (default `4747`)
 - `HOST` (default `0.0.0.0`)
 

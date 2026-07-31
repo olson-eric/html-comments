@@ -18,6 +18,7 @@ Options:
 Environment:
   HTML_DIR              Same as positional arg
   COMMENTS_DIR          Where to persist comments (default: <html-dir>/.html-comments)
+  BASE_PATH             Path prefix to mount the app under, e.g. /reviews (default: none)
   PORT                  Listen port (default: 4747)
   HOST                  Listen host (default: 0.0.0.0)
 `);
@@ -30,6 +31,15 @@ const HOST = process.env.HOST || '0.0.0.0';
 const ROOT = path.resolve(argv[0] || process.env.HTML_DIR || './html');
 const COMMENTS_DIR = path.resolve(process.env.COMMENTS_DIR || path.join(ROOT, '.html-comments'));
 
+// Normalized to "" (mounted at /) or "/prefix" with a leading slash and no
+// trailing slash, so it can be prepended to absolute paths verbatim.
+const BASE_PATH = (() => {
+  let p = String(process.env.BASE_PATH || '').trim();
+  if (!p || p === '/') return '';
+  if (!p.startsWith('/')) p = '/' + p;
+  return p.replace(/\/+$/, '');
+})();
+
 if (!fs.existsSync(ROOT) || !fs.statSync(ROOT).isDirectory()) {
   console.error(`html-comments: HTML directory does not exist: ${ROOT}`);
   console.error(`Usage: html-comments [<html-dir>]   (or set HTML_DIR=...)`);
@@ -38,6 +48,7 @@ if (!fs.existsSync(ROOT) || !fs.statSync(ROOT).isDirectory()) {
 fs.mkdirSync(COMMENTS_DIR, { recursive: true });
 
 app.use(express.json({ limit: '5mb' }));
+const router = express.Router();
 
 const newId = () => crypto.randomBytes(6).toString('hex');
 
@@ -47,6 +58,9 @@ const KIND_PATTERNS = [
   ['image', /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i],
 ];
 
+// Priority order for resolving an extension-free doc path to a file.
+const EXTENSIONS = ['.html', '.htm', '.md', '.markdown', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.bmp'];
+
 function fileKind(name) {
   for (const [kind, re] of KIND_PATTERNS) {
     if (re.test(name)) return kind;
@@ -54,17 +68,56 @@ function fileKind(name) {
   return null;
 }
 
+function encodePath(rel) {
+  return rel.split('/').map(encodeURIComponent).join('/');
+}
+
+// Canonical extension-free identifier for a file: "docs/spec" for
+// "docs/spec.html". Files are addressed by this doc path in URLs and the API,
+// so pasted links don't carry a file extension. When dropping the extension
+// would be ambiguous — a sibling earlier in EXTENSIONS priority, or a real
+// file named like the bare base — the full relative path stays the identifier
+// (resolveFile tries the exact path first, so it remains reachable).
+function docPathFor(rel) {
+  const lower = rel.toLowerCase();
+  const ext = EXTENSIONS.find((e) => lower.endsWith(e));
+  if (!ext) return rel;
+  const base = rel.slice(0, -ext.length);
+  if (!base || base.endsWith('/')) return rel;
+  const baseAbs = path.resolve(ROOT, base);
+  if (fs.existsSync(baseAbs) && fs.statSync(baseAbs).isFile() && fileKind(base)) return rel;
+  for (const e of EXTENSIONS) {
+    const abs = path.resolve(ROOT, base + e);
+    if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      return base + e === rel ? base : rel;
+    }
+  }
+  return rel;
+}
+
+// Accepts either a real relative path ("docs/spec.html") or an extension-free
+// doc path ("docs/spec"). Exact match wins; otherwise EXTENSIONS are tried in
+// priority order.
 function resolveFile(relPath) {
   if (typeof relPath !== 'string' || !relPath) return null;
   if (path.isAbsolute(relPath)) return null;
   const norm = path.posix.normalize(relPath.replace(/\\/g, '/'));
   if (norm.startsWith('..') || norm.includes('/../')) return null;
-  const abs = path.resolve(ROOT, norm);
-  if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) return null;
-  if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
-  const kind = fileKind(abs);
-  if (!kind) return null;
-  return { abs, rel: norm, kind };
+  const tryRel = (rel) => {
+    const abs = path.resolve(ROOT, rel);
+    if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) return null;
+    if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
+    const kind = fileKind(abs);
+    if (!kind) return null;
+    return { abs, rel, kind, doc: docPathFor(rel) };
+  };
+  const exact = tryRel(norm);
+  if (exact) return exact;
+  for (const ext of EXTENSIONS) {
+    const hit = tryRel(norm + ext);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 function resolveAsset(relPath) {
@@ -99,7 +152,8 @@ function buildTree(absDir, relDir = '') {
       const open = data.comments.filter((c) => !c.resolved).length;
       children.push({
         name: e.name,
-        path: childRel,
+        path: docPathFor(childRel),
+        file: childRel,
         type: 'file',
         kind: fileKind(e.name),
         commentCount: data.comments.length,
@@ -114,6 +168,8 @@ function buildTree(absDir, relDir = '') {
   return { name: path.basename(absDir) || path.basename(ROOT), path: relDir, type: 'dir', children };
 }
 
+// Comments stay keyed by the real relative path (with extension), so existing
+// comment stores keep working regardless of how the file was addressed.
 function commentsFile(relPath) {
   const hash = crypto.createHash('sha1').update(relPath).digest('hex');
   return path.join(COMMENTS_DIR, `${hash}.json`);
@@ -160,7 +216,7 @@ function markdownDocument(f) {
   const title = extractMarkdownTitle(md) || path.basename(f.abs);
   const dir = path.posix.dirname(f.rel);
   const baseHref =
-    '/raw/' + (dir === '.' ? '' : dir.split('/').map(encodeURIComponent).join('/') + '/');
+    `${BASE_PATH}/raw/` + (dir === '.' ? '' : dir.split('/').map(encodeURIComponent).join('/') + '/');
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -210,21 +266,41 @@ function escapeHtmlAttr(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
-app.get('/api/root', (_req, res) => {
-  res.json({ root: ROOT, name: path.basename(ROOT) });
+// The app chrome uses relative URLs throughout; a <base href> pointing at the
+// app root makes them resolve correctly wherever the app is mounted, including
+// under the nested /v/<doc-path> viewer URLs.
+function pageHtml(name) {
+  return fs
+    .readFileSync(path.join(__dirname, 'public', name), 'utf8')
+    .replace('<head>', `<head>\n    <base href="${BASE_PATH}/" />`);
+}
+
+// Preserve query params (e.g. ?for=name) across redirects, minus `drop`.
+function keepQuery(req, drop = []) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(req.query)) {
+    if (!drop.includes(k) && typeof v === 'string') qs.set(k, v);
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : '';
+}
+
+router.get('/api/root', (_req, res) => {
+  res.json({ root: ROOT, name: path.basename(ROOT), basePath: BASE_PATH });
 });
 
-app.get('/api/tree', (_req, res) => {
+router.get('/api/tree', (_req, res) => {
   res.json(buildTree(ROOT));
 });
 
-app.get('/api/file', (req, res) => {
+router.get('/api/file', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
   const stat = fs.statSync(f.abs);
   const data = readComments(f.rel);
   res.json({
-    path: f.rel,
+    path: f.doc,
+    file: f.rel,
     name: path.basename(f.abs),
     kind: f.kind,
     title: fileTitle(f),
@@ -236,7 +312,7 @@ app.get('/api/file', (req, res) => {
 
 // Raw HTML for .html files; rendered HTML for markdown (what the viewer shows,
 // and the text that comment anchors index into).
-app.get('/api/file/html', (req, res) => {
+router.get('/api/file/html', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).send('not found');
   if (f.kind === 'image') return res.status(400).json({ error: 'not renderable as html; fetch via /raw/' });
@@ -246,7 +322,7 @@ app.get('/api/file/html', (req, res) => {
   res.type('text/html; charset=utf-8').send(fs.readFileSync(f.abs, 'utf8'));
 });
 
-app.get('/api/file/comments', (req, res) => {
+router.get('/api/file/comments', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
   const data = readComments(f.rel);
@@ -254,7 +330,7 @@ app.get('/api/file/comments', (req, res) => {
   const status = req.query.status;
   if (status === 'open') comments = comments.filter((c) => !c.resolved);
   if (status === 'resolved') comments = comments.filter((c) => c.resolved);
-  res.json({ path: f.rel, comments });
+  res.json({ path: f.doc, file: f.rel, comments });
 });
 
 // Two anchor shapes: text anchors ({startIdx, length, quote, context*}) for
@@ -281,7 +357,7 @@ function normalizeAnchor(anchor) {
   return null;
 }
 
-app.post('/api/file/comments', (req, res) => {
+router.post('/api/file/comments', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
   const { anchor, text, author } = req.body || {};
@@ -308,7 +384,7 @@ app.post('/api/file/comments', (req, res) => {
   res.json(comment);
 });
 
-app.post('/api/file/comments/:cid/replies', (req, res) => {
+router.post('/api/file/comments/:cid/replies', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
   const { text, author } = req.body || {};
@@ -327,7 +403,7 @@ app.post('/api/file/comments/:cid/replies', (req, res) => {
   res.json(reply);
 });
 
-app.patch('/api/file/comments/:cid', (req, res) => {
+router.patch('/api/file/comments/:cid', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
   const data = readComments(f.rel);
@@ -339,7 +415,7 @@ app.patch('/api/file/comments/:cid', (req, res) => {
   res.json(comment);
 });
 
-app.delete('/api/file/comments/:cid', (req, res) => {
+router.delete('/api/file/comments/:cid', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
   const data = readComments(f.rel);
@@ -350,7 +426,7 @@ app.delete('/api/file/comments/:cid', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get(/^\/raw\/(.+)$/, (req, res) => {
+router.get(/^\/raw\/(.+)$/, (req, res) => {
   let rel;
   try {
     rel = decodeURIComponent(req.params[0]);
@@ -363,7 +439,7 @@ app.get(/^\/raw\/(.+)$/, (req, res) => {
 });
 
 // Markdown rendered as a standalone HTML page (what the viewer's iframe loads).
-app.get(/^\/render\/(.+)$/, (req, res) => {
+router.get(/^\/render\/(.+)$/, (req, res) => {
   let rel;
   try {
     rel = decodeURIComponent(req.params[0]);
@@ -375,19 +451,44 @@ app.get(/^\/render\/(.+)$/, (req, res) => {
   res.type('text/html; charset=utf-8').send(markdownDocument(f));
 });
 
-app.use(express.static(path.join(__dirname, 'public')));
+router.use(express.static(path.join(__dirname, 'public'), { index: false }));
 
-app.get('/v', (req, res) => {
+// Viewer. Files are addressed by extension-free doc path (/v/docs/spec);
+// addressing by real path redirects to the canonical extension-free URL.
+router.get(/^\/v\/(.+)$/, (req, res) => {
+  let rel;
+  try {
+    rel = decodeURIComponent(req.params[0]);
+  } catch {
+    return res.status(400).send('bad request');
+  }
+  const f = resolveFile(rel);
+  if (!f) return res.status(404).send('File not found');
+  if (rel !== f.doc) return res.redirect(`${BASE_PATH}/v/${encodePath(f.doc)}${keepQuery(req)}`);
+  res.type('text/html; charset=utf-8').send(pageHtml('viewer.html'));
+});
+
+// Legacy /v?path=... links redirect to the extension-free form.
+router.get('/v', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).send('File not found');
-  res.sendFile(path.join(__dirname, 'public', 'viewer.html'));
+  res.redirect(`${BASE_PATH}/v/${encodePath(f.doc)}${keepQuery(req, ['path'])}`);
 });
 
-app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+router.get('/', (_req, res) => {
+  res.type('text/html; charset=utf-8').send(pageHtml('index.html'));
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`html-comments serving ${ROOT}`);
-  console.log(`→ http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
-});
+if (BASE_PATH) {
+  app.get('/', (_req, res) => res.redirect(`${BASE_PATH}/`));
+}
+app.use(BASE_PATH || '/', router);
+
+if (require.main === module) {
+  app.listen(PORT, HOST, () => {
+    console.log(`html-comments serving ${ROOT}`);
+    console.log(`→ http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}${BASE_PATH ? BASE_PATH + '/' : ''}`);
+  });
+}
+
+module.exports = { app, resolveFile, docPathFor, BASE_PATH };
