@@ -1,7 +1,10 @@
+// All URLs are relative; the server injects a <base href> pointing at the app
+// root, so everything resolves correctly wherever the app is mounted
+// (BASE_PATH env var).
 let lastTreeEtag = null;
 
 async function loadRoot() {
-  const res = await fetch('/api/root');
+  const res = await fetch('api/root');
   const { root, name } = await res.json();
   document.getElementById('root-path').textContent = root;
   document.getElementById('root-name').textContent = name;
@@ -9,7 +12,7 @@ async function loadRoot() {
 
 async function loadTree() {
   try {
-    const res = await fetch('/api/tree');
+    const res = await fetch('api/tree');
     if (!res.ok) return;
     const tree = await res.json();
     const etag = JSON.stringify(tree);
@@ -60,7 +63,7 @@ function renderNode(node, depth) {
   } else {
     const a = document.createElement('a');
     a.className = 'tree-row tree-file-row';
-    a.href = `/v?path=${encodeURIComponent(node.path)}`;
+    a.href = `v/${encodePath(node.path)}`;
     const badge = node.openCount > 0
       ? `<span class="badge badge-open" title="${node.openCount} open / ${node.commentCount} total">${node.openCount}</span>`
       : node.commentCount > 0
@@ -80,6 +83,10 @@ function renderNode(node, depth) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+function encodePath(rel) {
+  return rel.split('/').map(encodeURIComponent).join('/');
 }
 
 document.getElementById('refresh').addEventListener('click', loadTree);

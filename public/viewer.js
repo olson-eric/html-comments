@@ -1,4 +1,12 @@
-const filePath = new URLSearchParams(location.search).get('path') || '';
+// The viewer lives at <app-root>/v/<doc-path>, where <doc-path> is the file's
+// extension-free path relative to the served root. The server injects a
+// <base href> pointing at the app root (which honors the BASE_PATH env var),
+// so every relative URL here — fetches, links, iframe src — resolves against
+// it regardless of how deep the doc path nests.
+const appRoot = new URL('.', document.baseURI).pathname;
+const filePath = location.pathname.startsWith(`${appRoot}v/`)
+  ? decodeURIComponent(location.pathname.slice(appRoot.length + 2))
+  : '';
 const apiQS = `?path=${encodeURIComponent(filePath)}`;
 const frame = document.getElementById('page-frame');
 const imageStage = document.getElementById('image-stage');
@@ -70,8 +78,7 @@ function closeCopyLinkPopover() {
 
 async function doCopyLink() {
   const name = copyLinkNameInput.value.trim();
-  const url = new URL(location.origin + location.pathname);
-  url.searchParams.set('path', filePath);
+  const url = new URL(`v/${encodePath(filePath)}`, document.baseURI);
   if (name) {
     url.searchParams.set('for', name);
     localStorage.setItem('hc:lastRecipient', name);
@@ -133,10 +140,10 @@ bootstrap();
 
 async function bootstrap() {
   if (!filePath) {
-    document.body.innerHTML = '<p style="padding:2rem">Missing ?path= parameter.</p>';
+    document.body.innerHTML = '<p style="padding:2rem">Missing document path.</p>';
     return;
   }
-  const res = await fetch(`/api/file${apiQS}`);
+  const res = await fetch(`api/file${apiQS}`);
   if (!res.ok) {
     document.body.innerHTML = '<p style="padding:2rem">File not found.</p>';
     return;
@@ -173,7 +180,7 @@ let treeCache = null;
 async function getTree(force) {
   if (treeCache && !force) return treeCache;
   try {
-    const res = await fetch('/api/tree');
+    const res = await fetch('api/tree');
     if (!res.ok) return treeCache;
     treeCache = await res.json();
   } catch {}
@@ -197,7 +204,8 @@ async function renderBreadcrumb() {
   const tree = await getTree();
   el.innerHTML = '';
   const parts = state.meta.path.split('/');
-  const fileName = parts.pop();
+  parts.pop();
+  const fileName = state.meta.name;
   const rootName = (tree && tree.name) || 'root';
 
   el.appendChild(makeCrumb(rootName, ''));
@@ -328,7 +336,7 @@ function buildFolderMenu(menu, node, stack) {
 function makeMenuFile(node) {
   const a = document.createElement('a');
   a.className = 'folder-menu-item' + (node.path === state.meta.path ? ' current' : '');
-  a.href = `/v?path=${encodeURIComponent(node.path)}`;
+  a.href = `v/${encodePath(node.path)}`;
   const icon = { html: '📄', markdown: '📝', image: '🖼️' }[node.kind] || '📄';
   const badge = node.openCount > 0
     ? `<span class="badge badge-open" title="${node.openCount} open / ${node.commentCount} total">${node.openCount}</span>`
@@ -350,16 +358,17 @@ function isImageDoc() {
   return state.meta && state.meta.kind === 'image';
 }
 
+// /raw/ and /render/ address the real file (meta.file, extension and all),
+// not the extension-free doc path.
 function docUrl() {
-  const encoded = state.meta.path.split('/').map(encodeURIComponent).join('/');
-  if (isImageDoc()) return `/raw/${encoded}`;
-  return state.meta.kind === 'markdown' ? `/render/${encoded}` : `/raw/${encoded}`;
+  const encoded = encodePath(state.meta.file);
+  return state.meta.kind === 'markdown' ? `render/${encoded}` : `raw/${encoded}`;
 }
 
 async function pollComments() {
   if (commentsList.querySelector('.composer-host, .reply-composer')) return;
   try {
-    const res = await fetch(`/api/file/comments${apiQS}`);
+    const res = await fetch(`api/file/comments${apiQS}`);
     if (!res.ok) return;
     const data = await res.json();
     const etag = JSON.stringify(data.comments);
@@ -397,7 +406,7 @@ function mergeComments(serverComments) {
 async function pollDocument() {
   if (commentsList.querySelector('.composer-host, .reply-composer')) return;
   try {
-    const res = await fetch(`/api/file${apiQS}`);
+    const res = await fetch(`api/file${apiQS}`);
     if (!res.ok) return;
     const meta = await res.json();
     if (meta.modifiedAt === lastDocModifiedAt) return;
@@ -666,7 +675,7 @@ function openComposerForNewComment(anchor) {
 }
 
 async function createComment(anchor, text) {
-  const res = await fetch(`/api/file/comments${apiQS}`, {
+  const res = await fetch(`api/file/comments${apiQS}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ anchor, text, author: authorInput.value || 'Anonymous' }),
@@ -683,7 +692,7 @@ async function createComment(anchor, text) {
 }
 
 async function addReply(commentId, text) {
-  const res = await fetch(`/api/file/comments/${commentId}/replies${apiQS}`, {
+  const res = await fetch(`api/file/comments/${commentId}/replies${apiQS}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, author: authorInput.value || 'Anonymous' }),
@@ -699,7 +708,7 @@ async function addReply(commentId, text) {
 }
 
 async function setResolved(commentId, resolved) {
-  const res = await fetch(`/api/file/comments/${commentId}${apiQS}`, {
+  const res = await fetch(`api/file/comments/${commentId}${apiQS}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ resolved }),
@@ -714,7 +723,7 @@ async function setResolved(commentId, resolved) {
 
 async function deleteComment(commentId) {
   if (!confirm('Delete this comment thread?')) return;
-  const res = await fetch(`/api/file/comments/${commentId}${apiQS}`, { method: 'DELETE' });
+  const res = await fetch(`api/file/comments/${commentId}${apiQS}`, { method: 'DELETE' });
   if (!res.ok) return;
   state.comments = state.comments.filter((c) => c.id !== commentId);
   renderHighlights();
@@ -1043,6 +1052,10 @@ function setActiveComment(commentId, opts = {}) {
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+function encodePath(rel) {
+  return rel.split('/').map(encodeURIComponent).join('/');
 }
 
 // renderMarkdown comes from /markdown.js (shared with the server).
