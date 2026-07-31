@@ -122,6 +122,27 @@ button.theme-toggle {
 }
 
 .copy-link-wrap { position: relative; }
+.copy-link-split { display: flex; }
+.copy-link-split #copy-link {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+#copy-link-arrow {
+  display: inline-flex;
+  align-items: center;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding: 0.45rem 0.4rem;
+  border-left: 1px solid color-mix(in srgb, var(--accent-fg) 30%, transparent);
+}
+#copy-link-arrow svg {
+  transition: transform 0.15s ease;
+}
+#copy-link-arrow[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+/* The flex display below would otherwise override the hidden attribute. */
+.copy-link-popover[hidden] { display: none; }
 .copy-link-popover {
   position: absolute;
   top: calc(100% + 0.4rem);
