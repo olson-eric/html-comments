@@ -1,0 +1,78 @@
+# Default values for html-comments.
+
+image:
+  repository: html-comments
+  # Defaults to the chart's appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Comments are stored as JSON files on disk with no cross-process locking,
+# so run a single replica.
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 4747
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: html-comments.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# The directory of .html/.md/image files to serve, mounted at /content.
+# Pick exactly one source; if none is set, an emptyDir is used (starts empty —
+# useful when another process, e.g. a sidecar or agent, writes files into it).
+content:
+  existingClaim: ""
+  hostPath: ""
+  readOnly: true
+
+# Where comment JSON is persisted, mounted at /comments.
+comments:
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+
+# Extra environment variables for the container.
+env: {}
+
+resources: {}
+  # limits:
+  #   cpu: 250m
+  #   memory: 256Mi
+  # requests:
+  #   cpu: 50m
+  #   memory: 64Mi
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

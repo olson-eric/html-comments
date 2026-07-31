@@ -13,14 +13,6 @@ Supported file kinds:
 ## Quick start
 
 ```bash
-# No install needed — run straight from npm
-npx html-comments /path/to/your/html
-
-# Or install globally
-npm install -g html-comments
-html-comments /path/to/your/html
-
-# Or clone + run from source
 git clone https://github.com/olson-eric/html-comments
 cd html-comments && npm install
 node server.js /path/to/your/html
@@ -118,6 +110,36 @@ curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec.h
 - `COMMENTS_DIR` (default `<html-dir>/.html-comments`) — where comment JSON is persisted.
 - `PORT` (default `4747`)
 - `HOST` (default `0.0.0.0`)
+
+## Deployment
+
+Deployment artifacts live in the repo root and `deploy/`:
+
+- **`Dockerfile`** — runs as the non-root `node` user. Mount your files at `/content` (read-only is fine) and a writable volume at `/comments` for comment persistence. Ships a healthcheck against `/api/root`.
+- **`docker-compose.yml`** — one-liner local/server deployment: `HTML_DIR=/path/to/files docker compose up -d`. Comments persist in a named volume.
+- **`deploy/helm/html-comments`** — Helm chart with Service, optional Ingress, and a PVC for comments. The served directory can come from an existing PVC (`content.existingClaim`), a `content.hostPath`, or default to an emptyDir you copy files into. Keep `replicaCount: 1` — comments are JSON files on disk, not multi-writer safe.
+- **`deploy.sh`** — wrapper for the common flows.
+
+```bash
+# Build + run locally in Docker
+./deploy.sh run /path/to/your/html
+
+# Build + push to a registry
+REGISTRY=ghcr.io/you ./deploy.sh push
+
+# Install/upgrade on Kubernetes (uses the pushed image)
+REGISTRY=ghcr.io/you NAMESPACE=reviews ./deploy.sh helm
+
+# Chart values you'll most likely set
+helm upgrade --install html-comments deploy/helm/html-comments \
+  --set image.repository=ghcr.io/you/html-comments \
+  --set image.tag=abc1234 \
+  --set content.existingClaim=my-artifacts-pvc \
+  --set ingress.enabled=true \
+  --set ingress.hosts[0].host=reviews.example.com
+```
+
+Remember there is no built-in authentication (see below) — keep deployments on a private network or behind an authenticating proxy.
 
 ## Security notes
 
