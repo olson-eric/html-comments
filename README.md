@@ -208,6 +208,20 @@ Chart extension points for common setups:
 
 Remember there is no built-in authentication (see below) — keep deployments on a private network or behind an authenticating proxy.
 
+### Writable deployments and agent access
+
+To enable HTTP publishing (uploads, rename, archive) on a hosted deployment:
+
+- **docker-compose**: `UPLOADS_ENABLED=1 CONTENT_MODE=rw docker compose up -d` (the content mount must be writable).
+- **Helm**: set `content.readOnly: false` and `env.UPLOADS_ENABLED: "1"`; add `env.TRUST_IDENTITY_HEADER: "X-Forwarded-Email"` (or whatever your auth proxy sets) so uploads and comments are attributed to the signed-in user.
+
+Be deliberate about the access model — the app itself has no auth, so the deployment provides it in two layers:
+
+- **Humans** come through your authenticating proxy (oauth2-proxy sidecar via `extraContainers`, an SSO-enforcing ingress, etc.), which verifies them and sets the identity header. The proxy **must strip inbound copies** of that header or clients can spoof identities.
+- **Agents** (Claude Code, or anything driving the JSON API) typically can't complete an SSO redirect. The supported pattern is a trusted internal route that bypasses the proxy: the cluster-internal Service DNS, a VPN/Tailscale address, or `kubectl port-forward`. Requests on that route carry no identity header, so they're attributed to the author the agent supplies.
+
+The consequence to be clear-eyed about: **anyone who can reach the pod directly can read and write everything under any name.** The proxy protects humans; the network boundary protects the API. Only run writable deployments where that boundary holds (private cluster networks, VPNs). Per-agent API tokens and an MCP integration are planned follow-ups for setups that need agent auth stronger than network trust.
+
 ## Security notes
 
 Pages render inside an `<iframe sandbox="allow-same-origin allow-scripts allow-popups allow-forms">`. Scripts in the rendered HTML can run; only host pages you trust. Markdown is rendered with HTML escaped and link/image URLs restricted to http(s)/mailto/relative. There is no authentication — put it behind your dev-server's auth (basic auth, Tailscale, etc.) if you want to share with coworkers over the public internet.
