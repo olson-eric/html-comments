@@ -1,0 +1,17 @@
+{{- if and .Values.comments.persistence.enabled (not .Values.comments.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "html-comments.fullname" . }}-comments
+  labels:
+    {{- include "html-comments.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.comments.persistence.accessModes | nindent 4 }}
+  {{- with .Values.comments.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.comments.persistence.size }}
+{{- end }}

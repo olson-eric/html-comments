@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#
+# deploy.sh — build and deploy html-comments.
+#
+# Usage:
+#   ./deploy.sh build                 Build the Docker image
+#   ./deploy.sh run [<html-dir>]      Build + run locally with Docker (default dir: ./html)
+#   ./deploy.sh push                  Build + push the image to a registry (set REGISTRY)
+#   ./deploy.sh helm                  Install/upgrade the Helm release
+#   ./deploy.sh helm-uninstall        Uninstall the Helm release
+#
+# Configuration (environment variables):
+#   IMAGE      Image name                   (default: html-comments)
+#   TAG        Image tag                    (default: git short SHA, or "latest")
+#   REGISTRY   Registry prefix for push, e.g. ghcr.io/olson-eric (required for push)
+#   PORT       Host port for `run`          (default: 4747)
+#   RELEASE    Helm release name            (default: html-comments)
+#   NAMESPACE  Kubernetes namespace         (default: html-comments)
+#   HELM_ARGS  Extra args appended to helm upgrade, e.g. "-f my-values.yaml"
+
+set -euo pipefail
+cd "$(dirname "$0")"
+
+IMAGE=${IMAGE:-html-comments}
+TAG=${TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo latest)}
+PORT=${PORT:-4747}
+RELEASE=${RELEASE:-html-comments}
+NAMESPACE=${NAMESPACE:-html-comments}
+CHART=deploy/helm/html-comments
+
+full_image() {
+  if [ -n "${REGISTRY:-}" ]; then
+    echo "${REGISTRY%/}/${IMAGE}:${TAG}"
+  else
+    echo "${IMAGE}:${TAG}"
+  fi
+}
+
+build() {
+  docker build -t "$(full_image)" .
+  echo "Built $(full_image)"
+}
+
+run() {
+  build
+  local html_dir
+  html_dir=$(cd "${1:-./html}" && pwd) || { echo "html dir not found: ${1:-./html}" >&2; exit 1; }
+  echo "Serving ${html_dir} on http://localhost:${PORT}"
+  docker run --rm --init \
+    -p "${PORT}:4747" \
+    -v "${html_dir}:/content:ro" \
+    -v html-comments-data:/comments \
+    "$(full_image)"
+}
+
+push() {
+  [ -n "${REGISTRY:-}" ] || { echo "Set REGISTRY to push (e.g. REGISTRY=ghcr.io/olson-eric)" >&2; exit 1; }
+  build
+  docker push "$(full_image)"
+  echo "Pushed $(full_image)"
+}
+
+helm_deploy() {
+  local repo="${IMAGE}"
+  [ -n "${REGISTRY:-}" ] && repo="${REGISTRY%/}/${IMAGE}"
+  # shellcheck disable=SC2086
+  helm upgrade --install "$RELEASE" "$CHART" \
+    --namespace "$NAMESPACE" --create-namespace \
+    --set image.repository="$repo" \
+    --set image.tag="$TAG" \
+    ${HELM_ARGS:-}
+}
+
+helm_uninstall() {
+  helm uninstall "$RELEASE" --namespace "$NAMESPACE"
+}
+
+case "${1:-}" in
+  build)          build ;;
+  run)            shift; run "$@" ;;
+  push)           push ;;
+  helm)           helm_deploy ;;
+  helm-uninstall) helm_uninstall ;;
+  *)
+    sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+esac

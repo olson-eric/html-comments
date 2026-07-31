@@ -1,0 +1,25 @@
+html-comments is deploying.
+
+{{- if .Values.ingress.enabled }}
+
+Once the ingress is ready, open:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else }}
+
+The service is not exposed outside the cluster (ingress is disabled).
+To reach it locally:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "html-comments.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+
+then open http://localhost:{{ .Values.service.port }}
+{{- end }}
+
+The served directory is mounted at /content
+{{- if .Values.content.existingClaim }} (PVC: {{ .Values.content.existingClaim }}){{- else if .Values.content.hostPath }} (hostPath: {{ .Values.content.hostPath }}){{- else }} (emptyDir — starts empty; copy files in with e.g.
+  kubectl --namespace {{ .Release.Namespace }} cp ./html <pod>:/content)
+{{- end }}
+
+NOTE: html-comments has no built-in authentication. Keep the service internal
+or put it behind an authenticating proxy before exposing it publicly.

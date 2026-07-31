@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "html-comments.fullname" . }}
+  labels:
+    {{- include "html-comments.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Recreate so a ReadWriteOnce comments volume can move to the new pod.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "html-comments.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "html-comments.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: html-comments
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: PORT
+              value: "4747"
+            - name: HTML_DIR
+              value: /content
+            - name: COMMENTS_DIR
+              value: /comments
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 4747
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /api/root
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /api/root
+              port: http
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: content
+              mountPath: /content
+              readOnly: {{ .Values.content.readOnly }}
+            - name: comments
+              mountPath: /comments
+      volumes:
+        - name: content
+          {{- if .Values.content.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.content.existingClaim }}
+          {{- else if .Values.content.hostPath }}
+          hostPath:
+            path: {{ .Values.content.hostPath }}
+            type: Directory
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: comments
+          {{- if .Values.comments.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.comments.persistence.existingClaim | default (printf "%s-comments" (include "html-comments.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

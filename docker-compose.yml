@@ -1,0 +1,16 @@
+services:
+  html-comments:
+    build: .
+    image: html-comments:latest
+    ports:
+      - "${PORT:-4747}:4747"
+    volumes:
+      # Directory of .html/.md/image files to serve (read-only is fine)
+      - ${HTML_DIR:-./html}:/content:ro
+      # Comment JSON persists here across container restarts
+      - comments:/comments
+    restart: unless-stopped
+    init: true
+
+volumes:
+  comments:
