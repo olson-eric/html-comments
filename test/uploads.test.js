@@ -12,6 +12,7 @@ const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'hc-up-test-'));
 process.env.HTML_DIR = ROOT;
 process.env.UPLOADS_ENABLED = '1';
 process.env.UPLOAD_MAX_BYTES = '1000';
+process.env.TRUST_IDENTITY_HEADER = 'X-Test-User';
 delete process.env.BASE_PATH;
 
 fs.mkdirSync(path.join(ROOT, 'docs'));
@@ -59,6 +60,39 @@ test('upload API', async (t) => {
     const after = await (await fetch(`${base}/api/file/comments?path=docs/spec`)).json();
     assert.strictEqual(after.comments.length, 1);
     assert.strictEqual(after.comments[0].text, 'nice');
+  });
+
+  await t.test('identity header stamps authorship, overriding the body author', async () => {
+    const res = await fetch(`${base}/api/file/comments?path=docs/spec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Test-User': 'eric.olson@corp.com' },
+      body: JSON.stringify({ anchor: { startIdx: 0, length: 4, quote: 'Spec' }, text: 'signed', author: 'spoofed' }),
+    });
+    const comment = await res.json();
+    assert.strictEqual(comment.author, 'eric.olson@corp.com');
+
+    const reply = await fetch(`${base}/api/file/comments/${comment.id}/replies?path=docs/spec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Test-User': 'eric.olson@corp.com' },
+      body: JSON.stringify({ text: 're', author: 'spoofed' }),
+    });
+    assert.strictEqual((await reply.json()).author, 'eric.olson@corp.com');
+  });
+
+  await t.test('without the header, the body author still applies', async () => {
+    const res = await fetch(`${base}/api/file/comments?path=docs/spec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor: { startIdx: 0, length: 4, quote: 'Spec' }, text: 'plain', author: 'bob' }),
+    });
+    assert.strictEqual((await res.json()).author, 'bob');
+  });
+
+  await t.test('api/root reports identity and the derived home folder slug', async () => {
+    const anon = await (await fetch(`${base}/api/root`)).json();
+    assert.strictEqual(anon.identity, null);
+    const known = await (await fetch(`${base}/api/root`, { headers: { 'X-Test-User': 'Eric.Olson@corp.com' } })).json();
+    assert.deepStrictEqual(known.identity, { user: 'Eric.Olson@corp.com', home: 'eric_olson' });
   });
 
   await t.test('traversal, hidden segments, and unsupported extensions are rejected', async () => {

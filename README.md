@@ -143,6 +143,7 @@ curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec" 
 - `HOST` (default `0.0.0.0`)
 - `UPLOADS_ENABLED` (default off) — enable the file upload/delete API (and the Upload button in the UI). When off, the served directory is never written to.
 - `UPLOAD_MAX_BYTES` (default `20971520`, 20 MB) — per-file upload size cap.
+- `TRUST_IDENTITY_HEADER` (default unset) — name of a request header carrying a verified identity, e.g. `X-Forwarded-Email` from an authenticating reverse proxy. When set, the header value stamps authorship on comments, replies, and uploads (overriding any client-supplied name — the UI shows the signed-in name and locks the field), appears in audit logs, and `/api/root` reports it (with a derived home-folder suggestion, e.g. `eric.olson@corp.com` → `eric_olson`). **Only set this when an auth proxy in front of the app strips inbound copies of the header** — otherwise any client can spoof it. Leave unset (the default) and authorship stays client-supplied exactly as before.
 
 ## Deployment
 

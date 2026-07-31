@@ -21,6 +21,8 @@ Environment:
   BASE_PATH             Path prefix to mount the app under, e.g. /reviews (default: none)
   UPLOADS_ENABLED       Set to 1 to enable the upload/delete API (default: off, read-only)
   UPLOAD_MAX_BYTES      Max upload size in bytes (default: 20971520 = 20MB)
+  TRUST_IDENTITY_HEADER Header carrying a verified identity from your auth proxy,
+                        e.g. X-Forwarded-Email (default: unset, never trusted)
   PORT                  Listen port (default: 4747)
   HOST                  Listen host (default: 0.0.0.0)
 `);
@@ -41,6 +43,36 @@ const UPLOAD_MAX_BYTES = (() => {
   const n = parseInt(process.env.UPLOAD_MAX_BYTES, 10);
   return Number.isFinite(n) && n > 0 ? n : 20 * 1024 * 1024;
 })();
+
+// Name of a request header carrying a verified identity (e.g.
+// X-Forwarded-Email set by an authenticating reverse proxy). Only trust it
+// when explicitly configured: without a proxy stripping inbound copies, any
+// client could spoof it. When set, the header value overrides client-supplied
+// author names on comments, replies, and uploads.
+const TRUST_IDENTITY_HEADER = String(process.env.TRUST_IDENTITY_HEADER || '').trim().toLowerCase();
+
+function identityFor(req) {
+  if (!TRUST_IDENTITY_HEADER) return null;
+  const v = req.headers[TRUST_IDENTITY_HEADER];
+  const s = (Array.isArray(v) ? v[0] : v || '').toString().trim().slice(0, 80);
+  return s || null;
+}
+
+// A user's suggested home folder, derived from their identity: the email
+// local part (or the whole value if it isn't email-shaped), lowercased, with
+// runs of anything outside [a-z0-9-] collapsed to "_". eric.olson@corp.com
+// → eric_olson. Nothing is created until they upload into it.
+function homeSlugFor(identity) {
+  if (!identity) return null;
+  const local = identity.includes('@') ? identity.slice(0, identity.indexOf('@')) : identity;
+  const slug = local.toLowerCase().replace(/[^a-z0-9-]+/g, '_').replace(/^_+|_+$/g, '');
+  return slug || null;
+}
+
+function authorFrom(req, bodyAuthor) {
+  const who = identityFor(req) || bodyAuthor;
+  return (who || 'Anonymous').toString().slice(0, 80);
+}
 
 // Normalized to "" (mounted at /) or "/prefix" with a leading slash and no
 // trailing slash, so it can be prepended to absolute paths verbatim.
@@ -335,13 +367,15 @@ const healthHandler = (_req, res) => res.json({ ok: true });
 
 router.get('/health', healthHandler);
 
-router.get('/api/root', (_req, res) => {
+router.get('/api/root', (req, res) => {
+  const user = identityFor(req);
   res.json({
     root: ROOT,
     name: path.basename(ROOT),
     basePath: BASE_PATH,
     uploadsEnabled: UPLOADS_ENABLED,
     uploadMaxBytes: UPLOAD_MAX_BYTES,
+    identity: user ? { user, home: homeSlugFor(user) } : null,
   });
 });
 
@@ -430,7 +464,7 @@ router.post('/api/file/comments', (req, res) => {
     id: newId(),
     anchor: stored,
     text,
-    author: (author || 'Anonymous').toString().slice(0, 80),
+    author: authorFrom(req, author),
     resolved: false,
     createdAt: new Date().toISOString(),
     replies: [],
@@ -451,7 +485,7 @@ router.post('/api/file/comments/:cid/replies', (req, res) => {
   const reply = {
     id: newId(),
     text,
-    author: (author || 'Anonymous').toString().slice(0, 80),
+    author: authorFrom(req, author),
     createdAt: new Date().toISOString(),
   };
   comment.replies.push(reply);
@@ -488,7 +522,7 @@ function requireUploads(_req, res, next) {
 }
 
 function audit(req, action, detail) {
-  console.log(`[audit] ${action} ${detail} from=${req.ip}`);
+  console.log(`[audit] ${action} ${detail} by=${identityFor(req) || 'anonymous'} from=${req.ip}`);
 }
 
 function decodedParam(req) {
