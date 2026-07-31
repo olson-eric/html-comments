@@ -13,14 +13,6 @@ Supported file kinds:
 ## Quick start
 
 ```bash
-# No install needed — run straight from npm
-npx html-comments /path/to/your/html
-
-# Or install globally
-npm install -g html-comments
-html-comments /path/to/your/html
-
-# Or clone + run from source
 git clone https://github.com/olson-eric/html-comments
 cd html-comments && npm install
 node server.js /path/to/your/html
