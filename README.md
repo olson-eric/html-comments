@@ -89,6 +89,27 @@ Files are identified by their extension-free doc path relative to the served roo
 | `PATCH` | `/api/file/comments/:cid?path=...` | `{ resolved?: boolean, text?: string }` | Resolve / edit |
 | `DELETE` | `/api/file/comments/:cid?path=...` | — | Delete |
 
+### Publishing files (opt-in)
+
+Off by default. Set `UPLOADS_ENABLED=1` to allow publishing and deleting files over HTTP; when unset, these routes return 403 and the served directory is never written to, exactly as before.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `PUT` | `/api/upload/<path>` | Write the raw request body to `<path>` (a real filename with extension, e.g. `docs/spec.html`). Parent directories are created. Overwriting is the update flow — the doc path, shared links, and comment threads all stay put. Responds `{ path, file, bytes, updated }`. |
+| `DELETE` | `/api/upload/<path>` | Delete a file (doc path or real filename). The comment store is kept, so re-uploading the same path restores its threads. |
+
+```bash
+# Publish (or update) a page
+curl -s -X PUT --data-binary @spec.html "http://localhost:4747/api/upload/docs/spec.html"
+
+# Bulk publish = one PUT per file
+for f in *.png; do curl -s -X PUT --data-binary "@$f" "http://localhost:4747/api/upload/shots/$f"; done
+```
+
+Upload paths get the same traversal protection as everything else, must end in a supported extension, may not contain hidden (`.`-prefixed) segments, and are capped at `UPLOAD_MAX_BYTES` (default 20 MB). Writes are atomic (temp file + rename). Each upload/delete is logged with the client address.
+
+**Security caveat:** uploaded HTML runs its scripts same-origin when viewed, like any served page. Only enable uploads on deployments where everyone who can reach the service is trusted — behind your auth proxy or on a private network.
+
 ### Example agent workflow
 
 ```bash
@@ -120,6 +141,8 @@ curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec" 
 - `BASE_PATH` (default none) — path prefix to mount the whole app under, e.g. `/reviews`.
 - `PORT` (default `4747`)
 - `HOST` (default `0.0.0.0`)
+- `UPLOADS_ENABLED` (default off) — enable the file upload/delete API (and the Upload button in the UI). When off, the served directory is never written to.
+- `UPLOAD_MAX_BYTES` (default `20971520`, 20 MB) — per-file upload size cap.
 
 ## Deployment
 

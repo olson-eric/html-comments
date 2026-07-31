@@ -126,6 +126,17 @@ test('HTTP routes', async (t) => {
     assert.strictEqual(byFile.file, 'notes.md');
   });
 
+  await t.test('uploads are disabled by default: mutations 403 and nothing is written', async () => {
+    const put = await fetch(`${base}/api/upload/newdoc.html`, { method: 'PUT', body: '<html>x</html>' });
+    assert.strictEqual(put.status, 403);
+    assert.strictEqual(fs.existsSync(path.join(ROOT, 'newdoc.html')), false);
+    const del = await fetch(`${base}/api/upload/notes.md`, { method: 'DELETE' });
+    assert.strictEqual(del.status, 403);
+    assert.strictEqual(fs.existsSync(path.join(ROOT, 'notes.md')), true);
+    const root = await (await fetch(`${base}/api/root`)).json();
+    assert.strictEqual(root.uploadsEnabled, false);
+  });
+
   await t.test('render works for extension-free markdown paths', async () => {
     const res = await fetch(`${base}/render/notes`);
     assert.strictEqual(res.status, 200);

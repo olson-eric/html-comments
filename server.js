@@ -19,6 +19,8 @@ Environment:
   HTML_DIR              Same as positional arg
   COMMENTS_DIR          Where to persist comments (default: <html-dir>/.html-comments)
   BASE_PATH             Path prefix to mount the app under, e.g. /reviews (default: none)
+  UPLOADS_ENABLED       Set to 1 to enable the upload/delete API (default: off, read-only)
+  UPLOAD_MAX_BYTES      Max upload size in bytes (default: 20971520 = 20MB)
   PORT                  Listen port (default: 4747)
   HOST                  Listen host (default: 0.0.0.0)
 `);
@@ -30,6 +32,15 @@ const PORT = process.env.PORT || 4747;
 const HOST = process.env.HOST || '0.0.0.0';
 const ROOT = path.resolve(argv[0] || process.env.HTML_DIR || './html');
 const COMMENTS_DIR = path.resolve(process.env.COMMENTS_DIR || path.join(ROOT, '.html-comments'));
+
+// File mutations (upload/delete) are strictly opt-in. When unset, every
+// mutating route 403s and the served directory is never written to — the
+// default deployment keeps today's read-only guarantee exactly.
+const UPLOADS_ENABLED = /^(1|true|yes)$/i.test(String(process.env.UPLOADS_ENABLED || ''));
+const UPLOAD_MAX_BYTES = (() => {
+  const n = parseInt(process.env.UPLOAD_MAX_BYTES, 10);
+  return Number.isFinite(n) && n > 0 ? n : 20 * 1024 * 1024;
+})();
 
 // Normalized to "" (mounted at /) or "/prefix" with a leading slash and no
 // trailing slash, so it can be prepended to absolute paths verbatim.
@@ -47,7 +58,12 @@ if (!fs.existsSync(ROOT) || !fs.statSync(ROOT).isDirectory()) {
 }
 fs.mkdirSync(COMMENTS_DIR, { recursive: true });
 
-app.use(express.json({ limit: '5mb' }));
+// Upload PUTs carry the file verbatim, whatever its Content-Type — keep the
+// JSON body parser away from them so a .json-shaped HTML page or a
+// text/html body isn't consumed before the raw parser sees it.
+const jsonParser = express.json({ limit: '5mb' });
+const isRawUpload = (req) => req.method === 'PUT' && /\/api\/upload\//.test(req.path);
+app.use((req, res, next) => (isRawUpload(req) ? next() : jsonParser(req, res, next)));
 const router = express.Router();
 
 const newId = () => crypto.randomBytes(6).toString('hex');
@@ -130,6 +146,28 @@ function resolveAsset(relPath) {
   if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) return null;
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
   return { abs, rel: norm };
+}
+
+// Upload targets must stay strictly inside the root and be a supported file
+// kind. Hidden segments (including .html-comments) are rejected outright —
+// the tree never shows them, so an upload there would just vanish.
+function resolveUploadTarget(relPath) {
+  if (typeof relPath !== 'string' || !relPath) return null;
+  if (path.isAbsolute(relPath)) return null;
+  const norm = path.posix.normalize(relPath.replace(/\\/g, '/'));
+  if (norm.startsWith('..') || norm.includes('/../')) return null;
+  if (norm.split('/').some((seg) => !seg || seg.startsWith('.') || seg === 'node_modules')) return null;
+  if (!fileKind(norm)) return null;
+  const abs = path.resolve(ROOT, norm);
+  if (abs === ROOT || !abs.startsWith(ROOT + path.sep)) return null;
+  if (fs.existsSync(abs) && !fs.statSync(abs).isFile()) return null;
+  return { abs, rel: norm };
+}
+
+function writeFileAtomic(file, buf) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, buf);
+  fs.renameSync(tmp, file);
 }
 
 function buildTree(absDir, relDir = '') {
@@ -298,7 +336,13 @@ const healthHandler = (_req, res) => res.json({ ok: true });
 router.get('/health', healthHandler);
 
 router.get('/api/root', (_req, res) => {
-  res.json({ root: ROOT, name: path.basename(ROOT), basePath: BASE_PATH });
+  res.json({
+    root: ROOT,
+    name: path.basename(ROOT),
+    basePath: BASE_PATH,
+    uploadsEnabled: UPLOADS_ENABLED,
+    uploadMaxBytes: UPLOAD_MAX_BYTES,
+  });
 });
 
 router.get('/api/tree', (_req, res) => {
@@ -438,6 +482,61 @@ router.delete('/api/file/comments/:cid', (req, res) => {
   res.json({ ok: true });
 });
 
+function requireUploads(_req, res, next) {
+  if (!UPLOADS_ENABLED) return res.status(403).json({ error: 'uploads are disabled (set UPLOADS_ENABLED=1)' });
+  next();
+}
+
+function audit(req, action, detail) {
+  console.log(`[audit] ${action} ${detail} from=${req.ip}`);
+}
+
+function decodedParam(req) {
+  try {
+    return decodeURIComponent(req.params[0]);
+  } catch {
+    return null;
+  }
+}
+
+// Publish a file: raw body, path in the URL. Overwriting an existing path is
+// the update flow — comment threads are keyed by that path and survive, which
+// is the point of anchors that tolerate edits.
+router.put(
+  /^\/api\/upload\/(.+)$/,
+  requireUploads,
+  express.raw({ type: () => true, limit: UPLOAD_MAX_BYTES }),
+  (req, res) => {
+    const rel = decodedParam(req);
+    if (rel === null) return res.status(400).json({ error: 'bad request' });
+    const target = resolveUploadTarget(rel);
+    if (!target) {
+      return res.status(400).json({
+        error: 'invalid upload path: must stay inside the served root, contain no hidden segments, and end in a supported extension (.html/.htm/.md/.markdown or an image type)',
+      });
+    }
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
+    if (!body.length) return res.status(400).json({ error: 'empty body' });
+    const updated = fs.existsSync(target.abs);
+    fs.mkdirSync(path.dirname(target.abs), { recursive: true });
+    writeFileAtomic(target.abs, body);
+    audit(req, updated ? 'update' : 'upload', `${target.rel} ${body.length}b`);
+    res.json({ path: docPathFor(target.rel), file: target.rel, bytes: body.length, updated });
+  }
+);
+
+// Deleting a file keeps its comment store: re-uploading the same path
+// restores the threads.
+router.delete(/^\/api\/upload\/(.+)$/, requireUploads, (req, res) => {
+  const rel = decodedParam(req);
+  if (rel === null) return res.status(400).json({ error: 'bad request' });
+  const f = resolveFile(rel);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  fs.unlinkSync(f.abs);
+  audit(req, 'delete', f.rel);
+  res.json({ ok: true, path: f.doc, file: f.rel });
+});
+
 router.get(/^\/raw\/(.+)$/, (req, res) => {
   let rel;
   try {
@@ -499,6 +598,14 @@ if (BASE_PATH) {
   app.get('/', (_req, res) => res.redirect(`${BASE_PATH}/`));
 }
 app.use(BASE_PATH || '/', router);
+
+// Body-parser size rejections come back as JSON like every other API error.
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: `body too large (limit ${UPLOAD_MAX_BYTES} bytes for uploads)` });
+  }
+  next(err);
+});
 
 if (require.main === module) {
   app.listen(PORT, HOST, () => {
