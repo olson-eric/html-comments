@@ -30,6 +30,12 @@ To host the app under a URL prefix (e.g. behind a shared cloud gateway or an S3-
 
 Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, hashed by relative path). Override with `COMMENTS_DIR=…` if you want them somewhere else.
 
+## Publishing from the browser
+
+With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or drag in `.html`/`.md`/image files (multi-select works), choose a destination folder, and they're published instantly — made an artifact in Claude and want comments on it? Download it and upload it here, then share the link. Uploading to an existing name updates that page in place: the link and every comment thread stay put, so this is also how you ship a revision. The UI confirms before replacing files.
+
+When `TRUST_IDENTITY_HEADER` is configured, the destination is prefilled with your personal folder, derived from your signed-in identity (`eric.olson@corp.com` → `eric_olson/`). Nothing is created at login — the folder appears with your first upload.
+
 ## Dark mode
 
 The app chrome (file browser, viewer, and comment sidebar) has a built-in dark
