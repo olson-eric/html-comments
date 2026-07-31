@@ -267,6 +267,45 @@ function writeComments(relPath, data) {
   writeJsonAtomic(commentsFile(relPath), { ...data, path: relPath });
 }
 
+// Append-only activity log so agents can poll one endpoint instead of
+// re-walking the tree. Kept in the comments dir (never served), JSONL, capped.
+const EVENTS_FILE = path.join(COMMENTS_DIR, 'events.jsonl');
+const EVENTS_MAX_BYTES = 1024 * 1024;
+const EVENTS_KEEP = 500;
+
+function recordEvent(kind, f, extra = {}) {
+  const entry = { at: new Date().toISOString(), kind, path: f.doc, file: f.rel, ...extra };
+  try {
+    fs.appendFileSync(EVENTS_FILE, JSON.stringify(entry) + '\n');
+    if (fs.statSync(EVENTS_FILE).size > EVENTS_MAX_BYTES) {
+      const lines = fs.readFileSync(EVENTS_FILE, 'utf8').split('\n').filter(Boolean);
+      const tmp = `${EVENTS_FILE}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, lines.slice(-EVENTS_KEEP).join('\n') + '\n');
+      fs.renameSync(tmp, EVENTS_FILE);
+    }
+  } catch (e) {
+    console.error(`[events] failed to record: ${e.message}`);
+  }
+}
+
+function readEvents(since) {
+  let raw;
+  try {
+    raw = fs.readFileSync(EVENTS_FILE, 'utf8');
+  } catch {
+    return [];
+  }
+  const events = [];
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    try {
+      const e = JSON.parse(line);
+      if (!since || e.at > since) events.push(e);
+    } catch {}
+  }
+  return events;
+}
+
 function extractTitle(html) {
   const m = /<title[^>]*>([^<]+)<\/title>/i.exec(html);
   return m ? m[1].trim() : null;
@@ -383,6 +422,13 @@ router.get('/api/tree', (_req, res) => {
   res.json(buildTree(ROOT));
 });
 
+// Recent activity across all files, oldest first. Poll with the returned
+// `now` as the next `since` to get exactly-once delivery of new events.
+router.get('/api/updates', (req, res) => {
+  const since = typeof req.query.since === 'string' && req.query.since ? req.query.since : null;
+  res.json({ now: new Date().toISOString(), since, events: readEvents(since) });
+});
+
 router.get('/api/file', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
@@ -471,6 +517,7 @@ router.post('/api/file/comments', (req, res) => {
   };
   data.comments.push(comment);
   writeComments(f.rel, data);
+  recordEvent('created', f, { commentId: comment.id, author: comment.author });
   res.json(comment);
 });
 
@@ -490,6 +537,7 @@ router.post('/api/file/comments/:cid/replies', (req, res) => {
   };
   comment.replies.push(reply);
   writeComments(f.rel, data);
+  recordEvent('replied', f, { commentId: comment.id, author: reply.author });
   res.json(reply);
 });
 
@@ -499,9 +547,16 @@ router.patch('/api/file/comments/:cid', (req, res) => {
   const data = readComments(f.rel);
   const comment = data.comments.find((c) => c.id === req.params.cid);
   if (!comment) return res.status(404).json({ error: 'comment not found' });
+  const wasResolved = comment.resolved;
   if (typeof req.body.resolved === 'boolean') comment.resolved = req.body.resolved;
   if (typeof req.body.text === 'string') comment.text = req.body.text;
   writeComments(f.rel, data);
+  if (comment.resolved !== wasResolved) {
+    recordEvent(comment.resolved ? 'resolved' : 'unresolved', f, {
+      commentId: comment.id,
+      author: identityFor(req) || undefined,
+    });
+  }
   res.json(comment);
 });
 
@@ -511,8 +566,9 @@ router.delete('/api/file/comments/:cid', (req, res) => {
   const data = readComments(f.rel);
   const idx = data.comments.findIndex((c) => c.id === req.params.cid);
   if (idx === -1) return res.status(404).json({ error: 'comment not found' });
-  data.comments.splice(idx, 1);
+  const [removed] = data.comments.splice(idx, 1);
   writeComments(f.rel, data);
+  recordEvent('deleted', f, { commentId: removed.id, author: identityFor(req) || undefined });
   res.json({ ok: true });
 });
 
@@ -555,7 +611,13 @@ router.put(
     fs.mkdirSync(path.dirname(target.abs), { recursive: true });
     writeFileAtomic(target.abs, body);
     audit(req, updated ? 'update' : 'upload', `${target.rel} ${body.length}b`);
-    res.json({ path: docPathFor(target.rel), file: target.rel, bytes: body.length, updated });
+    const doc = docPathFor(target.rel);
+    recordEvent('uploaded', { doc, rel: target.rel }, {
+      author: identityFor(req) || undefined,
+      bytes: body.length,
+      updated,
+    });
+    res.json({ path: doc, file: target.rel, bytes: body.length, updated });
   }
 );
 
@@ -568,6 +630,7 @@ router.delete(/^\/api\/upload\/(.+)$/, requireUploads, (req, res) => {
   if (!f) return res.status(404).json({ error: 'not found' });
   fs.unlinkSync(f.abs);
   audit(req, 'delete', f.rel);
+  recordEvent('removed', f, { author: identityFor(req) || undefined });
   res.json({ ok: true, path: f.doc, file: f.rel });
 });
 

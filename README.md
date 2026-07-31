@@ -74,6 +74,7 @@ Files are identified by their extension-free doc path relative to the served roo
 | `GET` | `/health` | Liveness check, returns `{ "ok": true }` (also served un-prefixed at the root when `BASE_PATH` is set) |
 | `GET` | `/api/root` | Absolute path of the served root + configured `basePath` |
 | `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`image`) and comment counts |
+| `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Kinds: `created`, `replied`, `resolved`, `unresolved`, `deleted` (comment events) and `uploaded`, `removed` (file events). Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
 | `GET` | `/api/file?path=...` | File metadata (incl. `kind`) + all comments |
 | `GET` | `/api/file/html?path=...` | The raw HTML; for markdown, the *rendered* HTML (the text anchors index into) |
 | `GET` | `/raw/<file>` | The file as-is, by real filename (use this for markdown source / image bytes / sibling assets) |
@@ -132,6 +133,15 @@ curl -s -X POST "http://localhost:4747/api/file/comments/<cid>/replies?path=docs
 curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec" \
   -H 'Content-Type: application/json' \
   -d '{"resolved":true}'
+```
+
+Instead of re-walking the tree, an agent can poll the change feed — pass the previous response's `now` as the next `since`:
+
+```bash
+SINCE=$(curl -s http://localhost:4747/api/updates | jq -r .now)
+# ... later ...
+curl -s "http://localhost:4747/api/updates?since=$SINCE" \
+  | jq '.events[] | select(.kind == "created") | {path, commentId, author}'
 ```
 
 ## Configuration

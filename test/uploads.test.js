@@ -134,6 +134,51 @@ test('upload API', async (t) => {
   });
 });
 
+test('change feed', async (t) => {
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  t.after(() => server.close());
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const t0 = (await (await fetch(`${base}/api/updates`)).json()).now;
+  await sleep(5);
+
+  await fetch(`${base}/api/upload/feed/doc.md`, { method: 'PUT', body: '# Feed\n', headers: { 'X-Test-User': 'eric@corp.com' } });
+  const created = await (await fetch(`${base}/api/file/comments?path=feed/doc`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ anchor: { startIdx: 0, length: 4, quote: 'Feed' }, text: 'hi', author: 'rev' }),
+  })).json();
+  await fetch(`${base}/api/file/comments/${created.id}/replies?path=feed/doc`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 're', author: 'rev2' }),
+  });
+  await fetch(`${base}/api/file/comments/${created.id}?path=feed/doc`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ resolved: true }),
+  });
+  await fetch(`${base}/api/file/comments/${created.id}?path=feed/doc`, { method: 'DELETE' });
+  await fetch(`${base}/api/upload/feed/doc`, { method: 'DELETE' });
+
+  const { events, now } = await (await fetch(`${base}/api/updates?since=${encodeURIComponent(t0)}`)).json();
+  const kinds = events.filter((e) => e.path === 'feed/doc').map((e) => e.kind);
+  assert.deepStrictEqual(kinds, ['uploaded', 'created', 'replied', 'resolved', 'deleted', 'removed']);
+  const uploaded = events.find((e) => e.kind === 'uploaded' && e.path === 'feed/doc');
+  assert.strictEqual(uploaded.author, 'eric@corp.com');
+  assert.strictEqual(uploaded.file, 'feed/doc.md');
+  const replied = events.find((e) => e.kind === 'replied');
+  assert.strictEqual(replied.commentId, created.id);
+  assert.strictEqual(replied.author, 'rev2');
+
+  // Polling with the returned `now` sees nothing new.
+  await sleep(5);
+  const again = await (await fetch(`${base}/api/updates?since=${encodeURIComponent(now)}`)).json();
+  assert.deepStrictEqual(again.events, []);
+});
+
 test('uploads work under BASE_PATH', async (t) => {
   const port = 40000 + Math.floor(Math.random() * 10000);
   const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js'), ROOT], {
