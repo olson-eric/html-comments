@@ -28,7 +28,13 @@
       <section class="card">
         <div class="tree-toolbar">
           <h2 id="root-name">Files</h2>
-          <button id="refresh" class="secondary">Refresh</button>
+          <div class="tree-toolbar-actions">
+            <label id="show-archived-wrap" class="show-archived" hidden>
+              <input type="checkbox" id="show-archived" /> Show archived
+            </label>
+            <button id="upload" class="secondary" hidden>Upload</button>
+            <button id="refresh" class="secondary">Refresh</button>
+          </div>
         </div>
         <div id="tree" class="tree"></div>
       </section>
@@ -45,6 +51,26 @@ PATCH  /api/file/comments/:cid?path=foo/bar         { resolved: true }
 DELETE /api/file/comments/:cid?path=foo/bar</code></pre>
       </section>
     </main>
+
+    <dialog id="upload-dialog" class="upload-dialog">
+      <form method="dialog" id="upload-form">
+        <h3>Upload files</h3>
+        <p class="muted">Publish <code>.html</code>, <code>.md</code>, or image files. Re-uploading to the same folder and name updates the page — its link and comments stay put.</p>
+        <label class="upload-label" for="upload-dest">Folder</label>
+        <input id="upload-dest" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. my_name/project" />
+        <div id="upload-drop" class="upload-drop" tabindex="0">
+          <span id="upload-drop-hint">Drag files here or <button type="button" id="upload-browse" class="linklike">browse</button></span>
+          <input id="upload-files" type="file" multiple hidden
+                 accept=".html,.htm,.md,.markdown,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp" />
+        </div>
+        <ul id="upload-list" class="upload-list"></ul>
+        <p id="upload-status" class="muted" hidden></p>
+        <div class="upload-actions">
+          <button type="button" id="upload-cancel" class="secondary">Cancel</button>
+          <button type="button" id="upload-go" disabled>Upload</button>
+        </div>
+      </form>
+    </dialog>
 
     <script src="theme.js"></script>
     <script src="index.js"></script>

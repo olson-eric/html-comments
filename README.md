@@ -30,6 +30,14 @@ To host the app under a URL prefix (e.g. behind a shared cloud gateway or an S3-
 
 Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, hashed by relative path). Override with `COMMENTS_DIR=…` if you want them somewhere else.
 
+## Publishing from the browser
+
+With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or drag in `.html`/`.md`/image files (multi-select works), choose a destination folder, and they're published instantly — made an artifact in Claude and want comments on it? Download it and upload it here, then share the link. Uploading to an existing name updates that page in place: the link and every comment thread stay put, so this is also how you ship a revision. The UI confirms before replacing files.
+
+When `TRUST_IDENTITY_HEADER` is configured, the destination is prefilled with your personal folder, derived from your signed-in identity (`eric.olson@corp.com` → `eric_olson/`). Nothing is created at login — the folder appears with your first upload.
+
+Hovering a row in the file tree shows two more actions: **rename/move** (✎ — old links redirect to the new location, comments come along) and **archive** (🗄 — hides the file behind a "Show archived" toggle without touching its link or comments; unarchive puts it back).
+
 ## Dark mode
 
 The app chrome (file browser, viewer, and comment sidebar) has a built-in dark
@@ -74,6 +82,7 @@ Files are identified by their extension-free doc path relative to the served roo
 | `GET` | `/health` | Liveness check, returns `{ "ok": true }` (also served un-prefixed at the root when `BASE_PATH` is set) |
 | `GET` | `/api/root` | Absolute path of the served root + configured `basePath` |
 | `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`image`) and comment counts |
+| `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Kinds: `created`, `replied`, `resolved`, `unresolved`, `deleted` (comment events) and `uploaded`, `removed`, `moved`, `archived`, `unarchived` (file events). Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
 | `GET` | `/api/file?path=...` | File metadata (incl. `kind`) + all comments |
 | `GET` | `/api/file/html?path=...` | The raw HTML; for markdown, the *rendered* HTML (the text anchors index into) |
 | `GET` | `/raw/<file>` | The file as-is, by real filename (use this for markdown source / image bytes / sibling assets) |
@@ -88,6 +97,34 @@ Files are identified by their extension-free doc path relative to the served roo
 | `POST` | `/api/file/comments/:cid/replies?path=...` | `{ text, author? }` | Reply on a thread |
 | `PATCH` | `/api/file/comments/:cid?path=...` | `{ resolved?: boolean, text?: string }` | Resolve / edit |
 | `DELETE` | `/api/file/comments/:cid?path=...` | — | Delete |
+
+### Publishing files (opt-in)
+
+Off by default. Set `UPLOADS_ENABLED=1` to allow publishing and deleting files over HTTP; when unset, these routes return 403 and the served directory is never written to, exactly as before.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `PUT` | `/api/upload/<path>` | Write the raw request body to `<path>` (a real filename with extension, e.g. `docs/spec.html`). Parent directories are created. Overwriting is the update flow — the doc path, shared links, and comment threads all stay put. Responds `{ path, file, bytes, updated }`. |
+| `DELETE` | `/api/upload/<path>` | Delete a file (doc path or real filename). The comment store is kept, so re-uploading the same path restores its threads. |
+
+```bash
+# Publish (or update) a page
+curl -s -X PUT --data-binary @spec.html "http://localhost:4747/api/upload/docs/spec.html"
+
+# Bulk publish = one PUT per file
+for f in *.png; do curl -s -X PUT --data-binary "@$f" "http://localhost:4747/api/upload/shots/$f"; done
+```
+
+Upload paths get the same traversal protection as everything else, must end in a supported extension, may not contain hidden (`.`-prefixed) segments, and are capped at `UPLOAD_MAX_BYTES` (default 20 MB). Writes are atomic (temp file + rename). Each upload/delete is logged with the client address.
+
+The same flag enables rename and archive:
+
+| Method | Path | Body | Description |
+| --- | --- | --- | --- |
+| `POST` | `/api/move` | `{ from, to }` | Rename/move a file (`to` is a real filename with extension) or a whole folder. Comment threads are keyed by path, so they migrate with the move — and the old doc path gets a **tombstone**: viewer links shared before the rename redirect to the new location. Refuses to overwrite an existing destination (409). |
+| `POST` | `/api/archive?path=...` | `{ archived: true\|false }` | Flag a file archived (or un-archive it). A flag, not a move: the path, shared links, and comments are untouched; `/api/tree` reports `archived: true` and the UI hides it behind a "Show archived" toggle. |
+
+**Security caveat:** uploaded HTML runs its scripts same-origin when viewed, like any served page. Only enable uploads on deployments where everyone who can reach the service is trusted — behind your auth proxy or on a private network.
 
 ### Example agent workflow
 
@@ -113,6 +150,15 @@ curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec" 
   -d '{"resolved":true}'
 ```
 
+Instead of re-walking the tree, an agent can poll the change feed — pass the previous response's `now` as the next `since`:
+
+```bash
+SINCE=$(curl -s http://localhost:4747/api/updates | jq -r .now)
+# ... later ...
+curl -s "http://localhost:4747/api/updates?since=$SINCE" \
+  | jq '.events[] | select(.kind == "created") | {path, commentId, author}'
+```
+
 ## Configuration
 
 - `HTML_DIR` (or positional arg) — directory of files to serve. Required to exist.
@@ -120,6 +166,9 @@ curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec" 
 - `BASE_PATH` (default none) — path prefix to mount the whole app under, e.g. `/reviews`.
 - `PORT` (default `4747`)
 - `HOST` (default `0.0.0.0`)
+- `UPLOADS_ENABLED` (default off) — enable the file upload/delete API (and the Upload button in the UI). When off, the served directory is never written to.
+- `UPLOAD_MAX_BYTES` (default `20971520`, 20 MB) — per-file upload size cap.
+- `TRUST_IDENTITY_HEADER` (default unset) — name of a request header carrying a verified identity, e.g. `X-Forwarded-Email` from an authenticating reverse proxy. When set, the header value stamps authorship on comments, replies, and uploads (overriding any client-supplied name — the UI shows the signed-in name and locks the field), appears in audit logs, and `/api/root` reports it (with a derived home-folder suggestion, e.g. `eric.olson@corp.com` → `eric_olson`). **Only set this when an auth proxy in front of the app strips inbound copies of the header** — otherwise any client can spoof it. Leave unset (the default) and authorship stays client-supplied exactly as before.
 
 ## Deployment
 
@@ -128,7 +177,8 @@ Deployment artifacts live in the repo root and `deploy/`:
 - **`Dockerfile`** — runs as the non-root `node` user. Mount your files at `/content` (read-only is fine) and a writable volume at `/comments` for comment persistence. Ships a healthcheck against `/health`, which is always served at the server root — healthchecks and probes keep working when `BASE_PATH` is set.
 - **`docker-compose.yml`** — one-liner local/server deployment: `HTML_DIR=/path/to/files docker compose up -d`. Comments persist in a named volume. `BASE_PATH` is passed through, and `HTML_DIR` defaults to the sample `html/` directory in this repo so a bare `docker compose up` works.
 - **`deploy/helm/html-comments`** — Helm chart with Service, optional Ingress, and a PVC for comments. The served directory can come from an existing PVC (`content.existingClaim`), a `content.hostPath`, or default to an emptyDir you copy files into. Keep `replicaCount: 1` — comments are JSON files on disk, not multi-writer safe. Liveness/readiness probes hit `/health` and are `BASE_PATH`-agnostic.
-- **`deploy.sh`** — wrapper for the common flows. `push` publishes the git-SHA tag (primary) and a `:latest` alias.
+- **`deploy.sh`** — wrapper for the common flows. `push` publishes the git-SHA tag (primary) and a `:latest` alias. `run` honors `UPLOADS_ENABLED=1` (mounts the content dir writable and passes the upload/identity env through).
+- **`Makefile`** — the same flows as one-word targets: `make docker-run`, `make docker-run-writable`, `make compose-up-writable`, `make test`, … (`make help` lists them).
 
 ```bash
 # Build + run locally in Docker
@@ -158,6 +208,21 @@ Chart extension points for common setups:
 - **`comments.persistence.keepOnUninstall`** (default `true`) — annotates the comments PVC with `helm.sh/resource-policy: keep`, so `helm uninstall` leaves your comment data behind. Set to `false` if you want the PVC deleted with the release.
 
 Remember there is no built-in authentication (see below) — keep deployments on a private network or behind an authenticating proxy.
+
+### Writable deployments and agent access
+
+To enable HTTP publishing (uploads, rename, archive) on a hosted deployment:
+
+- **Local trial**: `make docker-run-writable` builds the image and runs it with uploads enabled and the content mount writable (`HTML_DIR=/path/to/files` to point it at your own directory); `make run-writable` does the same without Docker. `make help` lists all targets.
+- **docker-compose**: `UPLOADS_ENABLED=1 CONTENT_MODE=rw docker compose up -d` (the content mount must be writable) — or `make compose-up-writable`.
+- **Helm**: set `content.readOnly: false` and `env.UPLOADS_ENABLED: "1"`; add `env.TRUST_IDENTITY_HEADER: "X-Forwarded-Email"` (or whatever your auth proxy sets) so uploads and comments are attributed to the signed-in user.
+
+Be deliberate about the access model — the app itself has no auth, so the deployment provides it in two layers:
+
+- **Humans** come through your authenticating proxy (oauth2-proxy sidecar via `extraContainers`, an SSO-enforcing ingress, etc.), which verifies them and sets the identity header. The proxy **must strip inbound copies** of that header or clients can spoof identities.
+- **Agents** (Claude Code, or anything driving the JSON API) typically can't complete an SSO redirect. The supported pattern is a trusted internal route that bypasses the proxy: the cluster-internal Service DNS, a VPN/Tailscale address, or `kubectl port-forward`. Requests on that route carry no identity header, so they're attributed to the author the agent supplies.
+
+The consequence to be clear-eyed about: **anyone who can reach the pod directly can read and write everything under any name.** The proxy protects humans; the network boundary protects the API. Only run writable deployments where that boundary holds (private cluster networks, VPNs). Per-agent API tokens and an MCP integration are planned follow-ups for setups that need agent auth stronger than network trust.
 
 ## Security notes
 

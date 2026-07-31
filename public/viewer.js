@@ -21,6 +21,19 @@ const authorInput = document.getElementById('author');
 authorInput.value = localStorage.getItem('hc:author') || '';
 authorInput.addEventListener('input', () => localStorage.setItem('hc:author', authorInput.value));
 
+// When the deployment trusts an auth proxy's identity header, the server
+// stamps authorship itself; show the signed-in name and lock the field.
+fetch('api/root')
+  .then((r) => r.json())
+  .then(({ identity }) => {
+    if (identity && identity.user) {
+      authorInput.value = identity.user;
+      authorInput.disabled = true;
+      authorInput.title = 'Signed in through your organization';
+    }
+  })
+  .catch(() => {});
+
 const hideResolvedToggle = document.getElementById('hide-resolved');
 hideResolvedToggle.checked = localStorage.getItem('hc:hideResolved') === '1';
 hideResolvedToggle.addEventListener('change', () => {
@@ -120,7 +133,7 @@ applyRecipientName();
 function applyRecipientName() {
   const recipient = new URLSearchParams(location.search).get('for');
   if (!recipient) return;
-  if (!localStorage.getItem('hc:author')) {
+  if (!authorInput.disabled && !localStorage.getItem('hc:author')) {
     authorInput.value = recipient;
     localStorage.setItem('hc:author', recipient);
   }

@@ -19,6 +19,10 @@ Environment:
   HTML_DIR              Same as positional arg
   COMMENTS_DIR          Where to persist comments (default: <html-dir>/.html-comments)
   BASE_PATH             Path prefix to mount the app under, e.g. /reviews (default: none)
+  UPLOADS_ENABLED       Set to 1 to enable the upload/delete API (default: off, read-only)
+  UPLOAD_MAX_BYTES      Max upload size in bytes (default: 20971520 = 20MB)
+  TRUST_IDENTITY_HEADER Header carrying a verified identity from your auth proxy,
+                        e.g. X-Forwarded-Email (default: unset, never trusted)
   PORT                  Listen port (default: 4747)
   HOST                  Listen host (default: 0.0.0.0)
 `);
@@ -30,6 +34,45 @@ const PORT = process.env.PORT || 4747;
 const HOST = process.env.HOST || '0.0.0.0';
 const ROOT = path.resolve(argv[0] || process.env.HTML_DIR || './html');
 const COMMENTS_DIR = path.resolve(process.env.COMMENTS_DIR || path.join(ROOT, '.html-comments'));
+
+// File mutations (upload/delete) are strictly opt-in. When unset, every
+// mutating route 403s and the served directory is never written to — the
+// default deployment keeps today's read-only guarantee exactly.
+const UPLOADS_ENABLED = /^(1|true|yes)$/i.test(String(process.env.UPLOADS_ENABLED || ''));
+const UPLOAD_MAX_BYTES = (() => {
+  const n = parseInt(process.env.UPLOAD_MAX_BYTES, 10);
+  return Number.isFinite(n) && n > 0 ? n : 20 * 1024 * 1024;
+})();
+
+// Name of a request header carrying a verified identity (e.g.
+// X-Forwarded-Email set by an authenticating reverse proxy). Only trust it
+// when explicitly configured: without a proxy stripping inbound copies, any
+// client could spoof it. When set, the header value overrides client-supplied
+// author names on comments, replies, and uploads.
+const TRUST_IDENTITY_HEADER = String(process.env.TRUST_IDENTITY_HEADER || '').trim().toLowerCase();
+
+function identityFor(req) {
+  if (!TRUST_IDENTITY_HEADER) return null;
+  const v = req.headers[TRUST_IDENTITY_HEADER];
+  const s = (Array.isArray(v) ? v[0] : v || '').toString().trim().slice(0, 80);
+  return s || null;
+}
+
+// A user's suggested home folder, derived from their identity: the email
+// local part (or the whole value if it isn't email-shaped), lowercased, with
+// runs of anything outside [a-z0-9-] collapsed to "_". eric.olson@corp.com
+// → eric_olson. Nothing is created until they upload into it.
+function homeSlugFor(identity) {
+  if (!identity) return null;
+  const local = identity.includes('@') ? identity.slice(0, identity.indexOf('@')) : identity;
+  const slug = local.toLowerCase().replace(/[^a-z0-9-]+/g, '_').replace(/^_+|_+$/g, '');
+  return slug || null;
+}
+
+function authorFrom(req, bodyAuthor) {
+  const who = identityFor(req) || bodyAuthor;
+  return (who || 'Anonymous').toString().slice(0, 80);
+}
 
 // Normalized to "" (mounted at /) or "/prefix" with a leading slash and no
 // trailing slash, so it can be prepended to absolute paths verbatim.
@@ -47,7 +90,12 @@ if (!fs.existsSync(ROOT) || !fs.statSync(ROOT).isDirectory()) {
 }
 fs.mkdirSync(COMMENTS_DIR, { recursive: true });
 
-app.use(express.json({ limit: '5mb' }));
+// Upload PUTs carry the file verbatim, whatever its Content-Type — keep the
+// JSON body parser away from them so a .json-shaped HTML page or a
+// text/html body isn't consumed before the raw parser sees it.
+const jsonParser = express.json({ limit: '5mb' });
+const isRawUpload = (req) => req.method === 'PUT' && /\/api\/upload\//.test(req.path);
+app.use((req, res, next) => (isRawUpload(req) ? next() : jsonParser(req, res, next)));
 const router = express.Router();
 
 const newId = () => crypto.randomBytes(6).toString('hex');
@@ -132,7 +180,29 @@ function resolveAsset(relPath) {
   return { abs, rel: norm };
 }
 
-function buildTree(absDir, relDir = '') {
+// Upload targets must stay strictly inside the root and be a supported file
+// kind. Hidden segments (including .html-comments) are rejected outright —
+// the tree never shows them, so an upload there would just vanish.
+function resolveUploadTarget(relPath) {
+  if (typeof relPath !== 'string' || !relPath) return null;
+  if (path.isAbsolute(relPath)) return null;
+  const norm = path.posix.normalize(relPath.replace(/\\/g, '/'));
+  if (norm.startsWith('..') || norm.includes('/../')) return null;
+  if (norm.split('/').some((seg) => !seg || seg.startsWith('.') || seg === 'node_modules')) return null;
+  if (!fileKind(norm)) return null;
+  const abs = path.resolve(ROOT, norm);
+  if (abs === ROOT || !abs.startsWith(ROOT + path.sep)) return null;
+  if (fs.existsSync(abs) && !fs.statSync(abs).isFile()) return null;
+  return { abs, rel: norm };
+}
+
+function writeFileAtomic(file, buf) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, buf);
+  fs.renameSync(tmp, file);
+}
+
+function buildTree(absDir, relDir = '', archived = readArchived()) {
   let entries;
   try {
     entries = fs.readdirSync(absDir, { withFileTypes: true });
@@ -145,12 +215,12 @@ function buildTree(absDir, relDir = '') {
     const childRel = relDir ? `${relDir}/${e.name}` : e.name;
     const childAbs = path.join(absDir, e.name);
     if (e.isDirectory()) {
-      const sub = buildTree(childAbs, childRel);
+      const sub = buildTree(childAbs, childRel, archived);
       if (sub.children.length) children.push(sub);
     } else if (e.isFile() && fileKind(e.name)) {
       const data = readComments(childRel);
       const open = data.comments.filter((c) => !c.resolved).length;
-      children.push({
+      const node = {
         name: e.name,
         path: docPathFor(childRel),
         file: childRel,
@@ -158,7 +228,9 @@ function buildTree(absDir, relDir = '') {
         kind: fileKind(e.name),
         commentCount: data.comments.length,
         openCount: open,
-      });
+      };
+      if (archived.has(childRel)) node.archived = true;
+      children.push(node);
     }
   }
   children.sort((a, b) => {
@@ -185,8 +257,95 @@ function readComments(relPath) {
   }
 }
 
+// All JSON persistence goes through a temp-file-plus-rename so a crash
+// mid-write can't leave a truncated file behind.
+function writeJsonAtomic(file, value) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+  fs.renameSync(tmp, file);
+}
+
 function writeComments(relPath, data) {
-  fs.writeFileSync(commentsFile(relPath), JSON.stringify({ ...data, path: relPath }, null, 2));
+  writeJsonAtomic(commentsFile(relPath), { ...data, path: relPath });
+}
+
+// Archive is a metadata flag, not a move: the file, its doc path, shared
+// links, and comment threads all stay put; the tree just marks it archived
+// and the UI hides it behind a toggle. Stored as real relative filenames.
+const ARCHIVE_FILE = path.join(COMMENTS_DIR, 'archived.json');
+
+function readArchived() {
+  try {
+    return new Set(JSON.parse(fs.readFileSync(ARCHIVE_FILE, 'utf8')).files);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeArchived(set) {
+  writeJsonAtomic(ARCHIVE_FILE, { files: [...set].sort() });
+}
+
+// Renames leave tombstones (old doc path → new doc path) so links pasted
+// into chat before a rename keep working: /v/<old> redirects to /v/<new>.
+const TOMBSTONES_FILE = path.join(COMMENTS_DIR, 'tombstones.json');
+
+function readTombstones() {
+  try {
+    return JSON.parse(fs.readFileSync(TOMBSTONES_FILE, 'utf8')).moves || {};
+  } catch {
+    return {};
+  }
+}
+
+function recordMove(oldDoc, newDoc) {
+  const moves = readTombstones();
+  // Repoint older tombstones at the newest location so redirects stay one hop.
+  for (const [k, v] of Object.entries(moves)) {
+    if (v === oldDoc) moves[k] = newDoc;
+  }
+  moves[oldDoc] = newDoc;
+  delete moves[newDoc]; // the target exists again; no redirect wanted
+  writeJsonAtomic(TOMBSTONES_FILE, { moves });
+}
+
+// Append-only activity log so agents can poll one endpoint instead of
+// re-walking the tree. Kept in the comments dir (never served), JSONL, capped.
+const EVENTS_FILE = path.join(COMMENTS_DIR, 'events.jsonl');
+const EVENTS_MAX_BYTES = 1024 * 1024;
+const EVENTS_KEEP = 500;
+
+function recordEvent(kind, f, extra = {}) {
+  const entry = { at: new Date().toISOString(), kind, path: f.doc, file: f.rel, ...extra };
+  try {
+    fs.appendFileSync(EVENTS_FILE, JSON.stringify(entry) + '\n');
+    if (fs.statSync(EVENTS_FILE).size > EVENTS_MAX_BYTES) {
+      const lines = fs.readFileSync(EVENTS_FILE, 'utf8').split('\n').filter(Boolean);
+      const tmp = `${EVENTS_FILE}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, lines.slice(-EVENTS_KEEP).join('\n') + '\n');
+      fs.renameSync(tmp, EVENTS_FILE);
+    }
+  } catch (e) {
+    console.error(`[events] failed to record: ${e.message}`);
+  }
+}
+
+function readEvents(since) {
+  let raw;
+  try {
+    raw = fs.readFileSync(EVENTS_FILE, 'utf8');
+  } catch {
+    return [];
+  }
+  const events = [];
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    try {
+      const e = JSON.parse(line);
+      if (!since || e.at > since) events.push(e);
+    } catch {}
+  }
+  return events;
 }
 
 function extractTitle(html) {
@@ -289,12 +448,27 @@ const healthHandler = (_req, res) => res.json({ ok: true });
 
 router.get('/health', healthHandler);
 
-router.get('/api/root', (_req, res) => {
-  res.json({ root: ROOT, name: path.basename(ROOT), basePath: BASE_PATH });
+router.get('/api/root', (req, res) => {
+  const user = identityFor(req);
+  res.json({
+    root: ROOT,
+    name: path.basename(ROOT),
+    basePath: BASE_PATH,
+    uploadsEnabled: UPLOADS_ENABLED,
+    uploadMaxBytes: UPLOAD_MAX_BYTES,
+    identity: user ? { user, home: homeSlugFor(user) } : null,
+  });
 });
 
 router.get('/api/tree', (_req, res) => {
   res.json(buildTree(ROOT));
+});
+
+// Recent activity across all files, oldest first. Poll with the returned
+// `now` as the next `since` to get exactly-once delivery of new events.
+router.get('/api/updates', (req, res) => {
+  const since = typeof req.query.since === 'string' && req.query.since ? req.query.since : null;
+  res.json({ now: new Date().toISOString(), since, events: readEvents(since) });
 });
 
 router.get('/api/file', (req, res) => {
@@ -310,6 +484,7 @@ router.get('/api/file', (req, res) => {
     title: fileTitle(f),
     size: stat.size,
     modifiedAt: stat.mtime.toISOString(),
+    archived: readArchived().has(f.rel) || undefined,
     comments: data.comments,
   });
 });
@@ -378,13 +553,14 @@ router.post('/api/file/comments', (req, res) => {
     id: newId(),
     anchor: stored,
     text,
-    author: (author || 'Anonymous').toString().slice(0, 80),
+    author: authorFrom(req, author),
     resolved: false,
     createdAt: new Date().toISOString(),
     replies: [],
   };
   data.comments.push(comment);
   writeComments(f.rel, data);
+  recordEvent('created', f, { commentId: comment.id, author: comment.author });
   res.json(comment);
 });
 
@@ -399,11 +575,12 @@ router.post('/api/file/comments/:cid/replies', (req, res) => {
   const reply = {
     id: newId(),
     text,
-    author: (author || 'Anonymous').toString().slice(0, 80),
+    author: authorFrom(req, author),
     createdAt: new Date().toISOString(),
   };
   comment.replies.push(reply);
   writeComments(f.rel, data);
+  recordEvent('replied', f, { commentId: comment.id, author: reply.author });
   res.json(reply);
 });
 
@@ -413,9 +590,16 @@ router.patch('/api/file/comments/:cid', (req, res) => {
   const data = readComments(f.rel);
   const comment = data.comments.find((c) => c.id === req.params.cid);
   if (!comment) return res.status(404).json({ error: 'comment not found' });
+  const wasResolved = comment.resolved;
   if (typeof req.body.resolved === 'boolean') comment.resolved = req.body.resolved;
   if (typeof req.body.text === 'string') comment.text = req.body.text;
   writeComments(f.rel, data);
+  if (comment.resolved !== wasResolved) {
+    recordEvent(comment.resolved ? 'resolved' : 'unresolved', f, {
+      commentId: comment.id,
+      author: identityFor(req) || undefined,
+    });
+  }
   res.json(comment);
 });
 
@@ -425,9 +609,182 @@ router.delete('/api/file/comments/:cid', (req, res) => {
   const data = readComments(f.rel);
   const idx = data.comments.findIndex((c) => c.id === req.params.cid);
   if (idx === -1) return res.status(404).json({ error: 'comment not found' });
-  data.comments.splice(idx, 1);
+  const [removed] = data.comments.splice(idx, 1);
   writeComments(f.rel, data);
+  recordEvent('deleted', f, { commentId: removed.id, author: identityFor(req) || undefined });
   res.json({ ok: true });
+});
+
+function requireUploads(_req, res, next) {
+  if (!UPLOADS_ENABLED) return res.status(403).json({ error: 'uploads are disabled (set UPLOADS_ENABLED=1)' });
+  next();
+}
+
+function audit(req, action, detail) {
+  console.log(`[audit] ${action} ${detail} by=${identityFor(req) || 'anonymous'} from=${req.ip}`);
+}
+
+function decodedParam(req) {
+  try {
+    return decodeURIComponent(req.params[0]);
+  } catch {
+    return null;
+  }
+}
+
+// Publish a file: raw body, path in the URL. Overwriting an existing path is
+// the update flow — comment threads are keyed by that path and survive, which
+// is the point of anchors that tolerate edits.
+router.put(
+  /^\/api\/upload\/(.+)$/,
+  requireUploads,
+  express.raw({ type: () => true, limit: UPLOAD_MAX_BYTES }),
+  (req, res) => {
+    const rel = decodedParam(req);
+    if (rel === null) return res.status(400).json({ error: 'bad request' });
+    const target = resolveUploadTarget(rel);
+    if (!target) {
+      return res.status(400).json({
+        error: 'invalid upload path: must stay inside the served root, contain no hidden segments, and end in a supported extension (.html/.htm/.md/.markdown or an image type)',
+      });
+    }
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
+    if (!body.length) return res.status(400).json({ error: 'empty body' });
+    const updated = fs.existsSync(target.abs);
+    fs.mkdirSync(path.dirname(target.abs), { recursive: true });
+    writeFileAtomic(target.abs, body);
+    audit(req, updated ? 'update' : 'upload', `${target.rel} ${body.length}b`);
+    const doc = docPathFor(target.rel);
+    recordEvent('uploaded', { doc, rel: target.rel }, {
+      author: identityFor(req) || undefined,
+      bytes: body.length,
+      updated,
+    });
+    res.json({ path: doc, file: target.rel, bytes: body.length, updated });
+  }
+);
+
+// Deleting a file keeps its comment store: re-uploading the same path
+// restores the threads.
+router.delete(/^\/api\/upload\/(.+)$/, requireUploads, (req, res) => {
+  const rel = decodedParam(req);
+  if (rel === null) return res.status(400).json({ error: 'bad request' });
+  const f = resolveFile(rel);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  fs.unlinkSync(f.abs);
+  audit(req, 'delete', f.rel);
+  recordEvent('removed', f, { author: identityFor(req) || undefined });
+  res.json({ ok: true, path: f.doc, file: f.rel });
+});
+
+// Validate a destination directory path (for folder renames): inside the
+// root, no hidden segments — same rules as upload targets minus the file-kind
+// requirement.
+function resolveDirTarget(relPath) {
+  if (typeof relPath !== 'string' || !relPath) return null;
+  if (path.isAbsolute(relPath)) return null;
+  const norm = path.posix.normalize(relPath.replace(/\\/g, '/'));
+  if (norm.startsWith('..') || norm.includes('/../') || norm === '.') return null;
+  if (norm.split('/').some((seg) => !seg || seg.startsWith('.') || seg === 'node_modules')) return null;
+  const abs = path.resolve(ROOT, norm);
+  if (abs === ROOT || !abs.startsWith(ROOT + path.sep)) return null;
+  return { abs, rel: norm };
+}
+
+function migrateFileMeta(oldRel, newRel, archived) {
+  const oldComments = commentsFile(oldRel);
+  if (fs.existsSync(oldComments)) {
+    const data = readComments(oldRel);
+    writeComments(newRel, data);
+    fs.unlinkSync(oldComments);
+  }
+  if (archived.delete(oldRel)) archived.add(newRel);
+}
+
+function listSupportedFiles(absDir, relDir) {
+  const out = [];
+  for (const e of fs.readdirSync(absDir, { withFileTypes: true })) {
+    if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+    const rel = `${relDir}/${e.name}`;
+    if (e.isDirectory()) out.push(...listSupportedFiles(path.join(absDir, e.name), rel));
+    else if (e.isFile() && fileKind(e.name)) out.push(rel);
+  }
+  return out;
+}
+
+// Rename/move a file or folder. Comment stores are keyed by relative path, so
+// they migrate with the move, and the old doc path gets a tombstone so links
+// shared before the rename redirect to the new location.
+router.post('/api/move', requireUploads, (req, res) => {
+  const { from, to } = req.body || {};
+  if (typeof from !== 'string' || typeof to !== 'string' || !from || !to) {
+    return res.status(400).json({ error: 'from and to required' });
+  }
+  const who = identityFor(req) || undefined;
+  const archived = readArchived();
+
+  const f = resolveFile(from);
+  if (f) {
+    const target = resolveUploadTarget(to);
+    if (!target) {
+      return res.status(400).json({ error: 'invalid destination: must stay inside the served root, contain no hidden segments, and end in a supported extension' });
+    }
+    if (fs.existsSync(target.abs)) return res.status(409).json({ error: 'destination already exists' });
+    fs.mkdirSync(path.dirname(target.abs), { recursive: true });
+    fs.renameSync(f.abs, target.abs);
+    migrateFileMeta(f.rel, target.rel, archived);
+    writeArchived(archived);
+    const newDoc = docPathFor(target.rel);
+    if (newDoc !== f.doc) recordMove(f.doc, newDoc);
+    audit(req, 'move', `${f.rel} -> ${target.rel}`);
+    recordEvent('moved', { doc: newDoc, rel: target.rel }, { from: f.doc, author: who });
+    return res.json({ path: newDoc, file: target.rel, from: f.doc });
+  }
+
+  // Folder move: every descendant migrates its comment store, archive flag,
+  // and tombstone.
+  const src = resolveDirTarget(from);
+  if (!src || !fs.existsSync(src.abs) || !fs.statSync(src.abs).isDirectory()) {
+    return res.status(404).json({ error: 'not found' });
+  }
+  const dst = resolveDirTarget(to);
+  if (!dst) {
+    return res.status(400).json({ error: 'invalid destination: must stay inside the served root and contain no hidden segments' });
+  }
+  if (fs.existsSync(dst.abs)) return res.status(409).json({ error: 'destination already exists' });
+  if ((dst.rel + '/').startsWith(src.rel + '/')) {
+    return res.status(400).json({ error: 'cannot move a folder into itself' });
+  }
+  const oldDocs = new Map(listSupportedFiles(src.abs, src.rel).map((rel) => [rel, docPathFor(rel)]));
+  fs.mkdirSync(path.dirname(dst.abs), { recursive: true });
+  fs.renameSync(src.abs, dst.abs);
+  for (const [oldRel, oldDoc] of oldDocs) {
+    const newRel = dst.rel + oldRel.slice(src.rel.length);
+    migrateFileMeta(oldRel, newRel, archived);
+    const newDoc = docPathFor(newRel);
+    if (newDoc !== oldDoc) recordMove(oldDoc, newDoc);
+  }
+  writeArchived(archived);
+  audit(req, 'move', `${src.rel}/ -> ${dst.rel}/`);
+  recordEvent('moved', { doc: dst.rel, rel: dst.rel }, { from: src.rel, folder: true, author: who });
+  res.json({ path: dst.rel, from: src.rel, folder: true });
+});
+
+// Archive / unarchive a file. A flag, not a move — the path, shared links,
+// and comments are untouched; the tree reports archived:true and the UI
+// hides it behind a "Show archived" toggle.
+router.post('/api/archive', requireUploads, (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  const flag = (req.body || {}).archived;
+  if (typeof flag !== 'boolean') return res.status(400).json({ error: 'archived (boolean) required' });
+  const archived = readArchived();
+  if (flag) archived.add(f.rel);
+  else archived.delete(f.rel);
+  writeArchived(archived);
+  audit(req, flag ? 'archive' : 'unarchive', f.rel);
+  recordEvent(flag ? 'archived' : 'unarchived', f, { author: identityFor(req) || undefined });
+  res.json({ path: f.doc, file: f.rel, archived: flag });
 });
 
 router.get(/^\/raw\/(.+)$/, (req, res) => {
@@ -467,7 +824,15 @@ router.get(/^\/v\/(.+)$/, (req, res) => {
     return res.status(400).send('bad request');
   }
   const f = resolveFile(rel);
-  if (!f) return res.status(404).send('File not found');
+  if (!f) {
+    // Renamed? Follow the tombstone so links shared before a rename keep
+    // working.
+    const dest = readTombstones()[rel];
+    if (dest && resolveFile(dest)) {
+      return res.redirect(`${BASE_PATH}/v/${encodePath(dest)}${keepQuery(req)}`);
+    }
+    return res.status(404).send('File not found');
+  }
   if (rel !== f.doc) return res.redirect(`${BASE_PATH}/v/${encodePath(f.doc)}${keepQuery(req)}`);
   res.type('text/html; charset=utf-8').send(pageHtml('viewer.html'));
 });
@@ -491,6 +856,14 @@ if (BASE_PATH) {
   app.get('/', (_req, res) => res.redirect(`${BASE_PATH}/`));
 }
 app.use(BASE_PATH || '/', router);
+
+// Body-parser size rejections come back as JSON like every other API error.
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: `body too large (limit ${UPLOAD_MAX_BYTES} bytes for uploads)` });
+  }
+  next(err);
+});
 
 if (require.main === module) {
   app.listen(PORT, HOST, () => {

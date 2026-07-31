@@ -68,7 +68,11 @@ comments:
     # `helm uninstall` leaves the comment data behind instead of deleting it.
     keepOnUninstall: true
 
-# Extra environment variables for the container.
+# Extra environment variables for the container. For a writable deployment
+# (HTTP publishing + rename/archive) also set content.readOnly: false, e.g.:
+#   env:
+#     UPLOADS_ENABLED: "1"
+#     TRUST_IDENTITY_HEADER: "X-Forwarded-Email"
 env: {}
 
 # Extra sidecar containers (e.g. an authenticating reverse proxy, or a
