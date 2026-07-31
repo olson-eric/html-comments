@@ -1,5 +1,6 @@
 node_modules/
 data/
+.html-comments/
 *.log
 .DS_Store
 .env

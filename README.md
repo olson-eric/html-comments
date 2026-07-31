@@ -71,6 +71,7 @@ Files are identified by their extension-free doc path relative to the served roo
 
 | Method | Path | Description |
 | --- | --- | --- |
+| `GET` | `/health` | Liveness check, returns `{ "ok": true }` (also served un-prefixed at the root when `BASE_PATH` is set) |
 | `GET` | `/api/root` | Absolute path of the served root + configured `basePath` |
 | `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`image`) and comment counts |
 | `GET` | `/api/file?path=...` | File metadata (incl. `kind`) + all comments |
@@ -124,10 +125,10 @@ curl -s -X PATCH "http://localhost:4747/api/file/comments/<cid>?path=docs/spec" 
 
 Deployment artifacts live in the repo root and `deploy/`:
 
-- **`Dockerfile`** — runs as the non-root `node` user. Mount your files at `/content` (read-only is fine) and a writable volume at `/comments` for comment persistence. Ships a healthcheck against `/api/root`.
-- **`docker-compose.yml`** — one-liner local/server deployment: `HTML_DIR=/path/to/files docker compose up -d`. Comments persist in a named volume.
-- **`deploy/helm/html-comments`** — Helm chart with Service, optional Ingress, and a PVC for comments. The served directory can come from an existing PVC (`content.existingClaim`), a `content.hostPath`, or default to an emptyDir you copy files into. Keep `replicaCount: 1` — comments are JSON files on disk, not multi-writer safe.
-- **`deploy.sh`** — wrapper for the common flows.
+- **`Dockerfile`** — runs as the non-root `node` user. Mount your files at `/content` (read-only is fine) and a writable volume at `/comments` for comment persistence. Ships a healthcheck against `/health`, which is always served at the server root — healthchecks and probes keep working when `BASE_PATH` is set.
+- **`docker-compose.yml`** — one-liner local/server deployment: `HTML_DIR=/path/to/files docker compose up -d`. Comments persist in a named volume. `BASE_PATH` is passed through, and `HTML_DIR` defaults to the sample `html/` directory in this repo so a bare `docker compose up` works.
+- **`deploy/helm/html-comments`** — Helm chart with Service, optional Ingress, and a PVC for comments. The served directory can come from an existing PVC (`content.existingClaim`), a `content.hostPath`, or default to an emptyDir you copy files into. Keep `replicaCount: 1` — comments are JSON files on disk, not multi-writer safe. Liveness/readiness probes hit `/health` and are `BASE_PATH`-agnostic.
+- **`deploy.sh`** — wrapper for the common flows. `push` publishes the git-SHA tag (primary) and a `:latest` alias.
 
 ```bash
 # Build + run locally in Docker
@@ -147,6 +148,14 @@ helm upgrade --install html-comments deploy/helm/html-comments \
   --set ingress.enabled=true \
   --set ingress.hosts[0].host=reviews.example.com
 ```
+
+Chart extension points for common setups:
+
+- **`serviceAccount.create` / `serviceAccount.name` / `serviceAccount.annotations`** — run the pod under a dedicated ServiceAccount; annotations are how cloud IAM binds to pods (EKS IRSA, GKE Workload Identity).
+- **`extraContainers`** — sidecars, e.g. an authenticating reverse proxy in front of the app or a process syncing files into `/content`. Rendered through `tpl`, so entries may use template expressions.
+- **`extraVolumes` / `extraVolumeMounts`** — additional volumes and mounts for the app container (also `tpl`-rendered).
+- **`service.targetPort`** (default `http`) — point the Service at a sidecar's port instead of the app, e.g. when an auth proxy terminates TLS. **`service.annotations`** — e.g. cloud load-balancer healthcheck config.
+- **`comments.persistence.keepOnUninstall`** (default `true`) — annotates the comments PVC with `helm.sh/resource-policy: keep`, so `helm uninstall` leaves your comment data behind. Set to `false` if you want the PVC deleted with the release.
 
 Remember there is no built-in authentication (see below) — keep deployments on a private network or behind an authenticating proxy.
 

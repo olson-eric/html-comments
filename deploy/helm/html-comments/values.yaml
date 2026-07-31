@@ -14,9 +14,27 @@ fullnameOverride: ""
 # so run a single replica.
 replicaCount: 1
 
+serviceAccount:
+  # Create a ServiceAccount for the pod. When false and name is empty, the
+  # pod runs as the namespace's "default" ServiceAccount.
+  create: false
+  # Name of the ServiceAccount to use (created when create is true; defaults
+  # to the release fullname).
+  name: ""
+  # Annotations for the created ServiceAccount — how cloud IAM binds to pods,
+  # e.g. eks.amazonaws.com/role-arn (IRSA) or iam.gke.io/gcp-service-account
+  # (GKE Workload Identity).
+  annotations: {}
+
 service:
   type: ClusterIP
   port: 4747
+  # Pod port (name or number) the Service routes to. Defaults to the app
+  # container's port; point it at a sidecar's port when e.g. an auth proxy
+  # in extraContainers terminates traffic in front of the app.
+  targetPort: http
+  # Service annotations, e.g. cloud load-balancer healthcheck/TLS config.
+  annotations: {}
 
 ingress:
   enabled: false
@@ -46,9 +64,21 @@ comments:
     accessModes:
       - ReadWriteOnce
     size: 1Gi
+    # Annotate the created PVC with helm.sh/resource-policy: keep, so
+    # `helm uninstall` leaves the comment data behind instead of deleting it.
+    keepOnUninstall: true
 
 # Extra environment variables for the container.
 env: {}
+
+# Extra sidecar containers (e.g. an authenticating reverse proxy, or a
+# process syncing files into /content). Rendered through tpl, so values may
+# use template expressions.
+extraContainers: []
+
+# Extra volumes / mounts for the app container, rendered through tpl.
+extraVolumes: []
+extraVolumeMounts: []
 
 resources: {}
   # limits:

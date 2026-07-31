@@ -285,6 +285,10 @@ function keepQuery(req, drop = []) {
   return s ? `?${s}` : '';
 }
 
+const healthHandler = (_req, res) => res.json({ ok: true });
+
+router.get('/health', healthHandler);
+
 router.get('/api/root', (_req, res) => {
   res.json({ root: ROOT, name: path.basename(ROOT), basePath: BASE_PATH });
 });
@@ -479,6 +483,10 @@ router.get('/', (_req, res) => {
   res.type('text/html; charset=utf-8').send(pageHtml('index.html'));
 });
 
+// Health stays at the root even when the app is mounted under BASE_PATH, so
+// container healthchecks and Kubernetes probes don't depend on the prefix
+// (it also exists under the prefix via the router).
+app.get('/health', healthHandler);
 if (BASE_PATH) {
   app.get('/', (_req, res) => res.redirect(`${BASE_PATH}/`));
 }
