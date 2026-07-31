@@ -90,6 +90,31 @@ if (!fs.existsSync(ROOT) || !fs.statSync(ROOT).isDirectory()) {
 }
 fs.mkdirSync(COMMENTS_DIR, { recursive: true });
 
+// Bare `node server.js <dir>` defaults the comment store to
+// <dir>/.html-comments, while the container images set COMMENTS_DIR=/comments
+// (a volume). Someone moving between the two would find their old comments
+// silently gone. If the configured store is empty but the in-content default
+// has data, import it once so comments follow the content.
+const IN_CONTENT_COMMENTS_DIR = path.resolve(path.join(ROOT, '.html-comments'));
+if (COMMENTS_DIR !== IN_CONTENT_COMMENTS_DIR) {
+  const dataFiles = (dir) => {
+    try {
+      return fs.readdirSync(dir).filter((f) => f.endsWith('.json') || f.endsWith('.jsonl'));
+    } catch {
+      return [];
+    }
+  };
+  if (dataFiles(COMMENTS_DIR).length === 0) {
+    const found = dataFiles(IN_CONTENT_COMMENTS_DIR);
+    for (const f of found) {
+      fs.copyFileSync(path.join(IN_CONTENT_COMMENTS_DIR, f), path.join(COMMENTS_DIR, f));
+    }
+    if (found.length) {
+      console.log(`Imported ${found.length} comment file(s) from ${IN_CONTENT_COMMENTS_DIR} into ${COMMENTS_DIR}`);
+    }
+  }
+}
+
 // Upload PUTs carry the file verbatim, whatever its Content-Type — keep the
 // JSON body parser away from them so a .json-shaped HTML page or a
 // text/html body isn't consumed before the raw parser sees it.

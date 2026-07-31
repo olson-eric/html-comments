@@ -162,7 +162,7 @@ curl -s "http://localhost:4747/api/updates?since=$SINCE" \
 ## Configuration
 
 - `HTML_DIR` (or positional arg) — directory of files to serve. Required to exist.
-- `COMMENTS_DIR` (default `<html-dir>/.html-comments`) — where comment JSON is persisted.
+- `COMMENTS_DIR` (default `<html-dir>/.html-comments`) — where comment JSON is persisted. If this points at an **empty** store but `<html-dir>/.html-comments` has data — the container images set `COMMENTS_DIR=/comments`, so this is exactly what happens when you move a directory you previously served with bare `node server.js` into Docker — the old store is imported on startup so your comments come along. A non-empty `COMMENTS_DIR` is never touched.
 - `BASE_PATH` (default none) — path prefix to mount the whole app under, e.g. `/reviews`.
 - `PORT` (default `4747`)
 - `HOST` (default `0.0.0.0`)
