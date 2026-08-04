@@ -51,6 +51,14 @@ const UPLOAD_MAX_BYTES = (() => {
 // author names on comments, replies, and uploads.
 const TRUST_IDENTITY_HEADER = String(process.env.TRUST_IDENTITY_HEADER || '').trim().toLowerCase();
 
+// What a signed-in user's new uploads default to: 'private' (only the
+// uploader until they share) or 'everyone'. Only meaningful alongside
+// TRUST_IDENTITY_HEADER — anonymous uploads have no owner to be private to,
+// so they are always visible to everyone. Unknown values fall back to
+// 'private', the safe direction.
+const DEFAULT_VISIBILITY =
+  String(process.env.DEFAULT_VISIBILITY || '').trim().toLowerCase() === 'everyone' ? 'everyone' : 'private';
+
 function identityFor(req) {
   if (!TRUST_IDENTITY_HEADER) return null;
   const v = req.headers[TRUST_IDENTITY_HEADER];
@@ -544,6 +552,7 @@ router.get('/api/root', (req, res) => {
     basePath: BASE_PATH,
     uploadsEnabled: UPLOADS_ENABLED,
     uploadMaxBytes: UPLOAD_MAX_BYTES,
+    defaultVisibility: DEFAULT_VISIBILITY,
     identity: user ? { user, home: homeSlugFor(user) } : null,
   });
 });
@@ -808,24 +817,26 @@ router.put(
     const updated = fs.existsSync(target.abs);
     fs.mkdirSync(path.dirname(target.abs), { recursive: true });
     writeFileAtomic(target.abs, body);
-    // First identified upload of a path claims ownership (visible to everyone
-    // until the owner restricts it); an existing entry is never re-stamped.
+    // First identified upload of a path claims ownership at the configured
+    // default visibility; an existing entry is never re-stamped.
     const identity = identityFor(req);
-    if (identity) {
+    let visibility = 'everyone';
+    {
       const perms = readPerms();
-      if (!perms[target.rel]) {
-        perms[target.rel] = { owner: identity, visibility: 'everyone' };
+      if (identity && !perms[target.rel]) {
+        perms[target.rel] = { owner: identity, visibility: DEFAULT_VISIBILITY };
         writePerms(perms);
       }
+      if (perms[target.rel]) visibility = perms[target.rel].visibility;
     }
     audit(req, updated ? 'update' : 'upload', `${target.rel} ${body.length}b`);
     const doc = docPathFor(target.rel);
     recordEvent('uploaded', { doc, rel: target.rel }, {
-      author: identityFor(req) || undefined,
+      author: identity || undefined,
       bytes: body.length,
       updated,
     });
-    res.json({ path: doc, file: target.rel, bytes: body.length, updated });
+    res.json({ path: doc, file: target.rel, bytes: body.length, updated, visibility });
   }
 );
 

@@ -42,15 +42,17 @@ Hovering a row in the file tree shows two more actions: **rename/move** (✎ —
 
 On deployments with a verified identity (`TRUST_IDENTITY_HEADER`, see below), every document can be shared at one of three levels:
 
-- **Everyone** (the default) — anyone on the deployment can see it. Documents with no sharing set behave exactly as before this feature existed.
+- **Private** — only the owner. This is the default for documents you upload while signed in.
 - **Specific people** — only the owner and a list of identities (usually emails) can see it.
-- **Private** — only the owner.
+- **Everyone** — anyone on the deployment can see it. This is the standing behavior for *unowned* documents: files that predate the feature, were synced into the served directory from outside, or were uploaded without an identity — there is no owner for them to be private to. Set `DEFAULT_VISIBILITY=everyone` if you'd rather signed-in uploads start open too.
 
-The viewer grows a **Share** button when you're signed in: pick a level, list people if applicable, save. Ownership is stamped by your first upload of a path (or your first change to its sharing, for files that predate the feature or were synced in from outside); only the owner can change a document's sharing or — once it's restricted — overwrite, move, archive, or delete it. Anyone who can *see* a shared document can comment on it: a reviewer who can't comment would defeat the point.
+The viewer grows a **Share** button when you're signed in: pick a level, list people if applicable, save. Ownership is stamped by your first upload of a path (or your first change to its sharing, for unowned files — that's also how you take charge of pre-existing content); only the owner can change a document's sharing or — once it's restricted — overwrite, move, archive, or delete it. Anyone who can *see* a shared document can comment on it: a reviewer who can't comment would defeat the point.
+
+The file tree is the discovery surface, and it's filtered per viewer: `/api/tree` (and the browser UI built on it) lists only what the requesting identity can read — your own documents, ones shared with you, and "everyone" documents, wherever they live in the folder hierarchy. Folders (including the suggested per-user home folders) are organization, not access control; a folder with nothing you can read simply doesn't appear.
 
 Restriction is enforced everywhere the document surfaces: it disappears from the file tree, its viewer link and every API route return 404 (existence isn't leaked), and its events are filtered out of the `/api/updates` change feed for anyone who can't read it. Because agents authenticate as a user (see the deployment section below), an agent sees exactly what the person it's acting for sees.
 
-Sharing state lives in `<comments-dir>/permissions.json`, beside the comment stores. Entries survive renames and delete/re-upload — a restricted path can't be squatted by re-uploading over it — and everything is per-document; there are no groups, roles, or folder inheritance. Requests with no identity (including all traffic on deployments that never set `TRUST_IDENTITY_HEADER`) see only "everyone" documents, which is all documents until someone with an identity restricts one.
+Sharing state lives in `<comments-dir>/permissions.json`, beside the comment stores. Entries survive renames and delete/re-upload — a restricted path can't be squatted by re-uploading over it — and everything is per-document; there are no groups, roles, or folder inheritance. Requests with no identity (including all traffic on deployments that never set `TRUST_IDENTITY_HEADER`) see only "everyone" documents — on an identity-less deployment that is every document, exactly as before this feature existed.
 
 ## Dark mode
 
@@ -127,7 +129,7 @@ Off by default. Set `UPLOADS_ENABLED=1` to allow publishing and deleting files o
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `PUT` | `/api/upload/<path>` | Write the raw request body to `<path>` (a real filename with extension, e.g. `docs/spec.html`). Parent directories are created. Overwriting is the update flow — the doc path, shared links, and comment threads all stay put. Responds `{ path, file, bytes, updated }`. |
+| `PUT` | `/api/upload/<path>` | Write the raw request body to `<path>` (a real filename with extension, e.g. `docs/spec.html`). Parent directories are created. Overwriting is the update flow — the doc path, shared links, and comment threads all stay put. Responds `{ path, file, bytes, updated, visibility }` — an identified first upload of a path claims ownership at `DEFAULT_VISIBILITY`, so check `visibility` to know whether the page needs sharing before its link works for others. |
 | `DELETE` | `/api/upload/<path>` | Delete a file (doc path or real filename). The comment store is kept, so re-uploading the same path restores its threads. |
 
 ```bash
@@ -191,6 +193,7 @@ curl -s "http://localhost:4747/api/updates?since=$SINCE" \
 - `HOST` (default `0.0.0.0`)
 - `UPLOADS_ENABLED` (default off) — enable the file upload/delete API (and the Upload button in the UI). When off, the served directory is never written to.
 - `UPLOAD_MAX_BYTES` (default `20971520`, 20 MB) — per-file upload size cap.
+- `DEFAULT_VISIBILITY` (default `private`) — what a signed-in user's first upload of a path defaults to: `private` (only the uploader until they share it) or `everyone`. Only meaningful alongside `TRUST_IDENTITY_HEADER`; anonymous uploads have no owner and are always visible to everyone.
 - `TRUST_IDENTITY_HEADER` (default unset) — name of a request header carrying a verified identity, e.g. `X-Forwarded-Email` from an authenticating reverse proxy. When set, the header value stamps authorship on comments, replies, and uploads (overriding any client-supplied name — the UI shows the signed-in name and locks the field), appears in audit logs, `/api/root` reports it (with a derived home-folder suggestion, e.g. `eric.olson@corp.com` → `eric_olson`), and it is the identity that per-document [sharing](#sharing) is evaluated against. **Only set this when an auth proxy in front of the app strips inbound copies of the header** — otherwise any client can spoof it. Leave unset (the default) and authorship stays client-supplied exactly as before.
 
 ## Deployment

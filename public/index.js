@@ -18,6 +18,11 @@ async function loadRoot() {
     if (info.identity && info.identity.home) {
       document.getElementById('upload-dest').value = info.identity.home;
     }
+    // Signed-in uploads default to private (unless the deployment overrides
+    // DEFAULT_VISIBILITY); say so up front rather than surprising people.
+    if (info.identity && info.defaultVisibility === 'private') {
+      document.getElementById('upload-privacy-hint').hidden = false;
+    }
   }
 }
 

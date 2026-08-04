@@ -11,6 +11,7 @@ const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'hc-perm-test-'));
 process.env.HTML_DIR = ROOT;
 process.env.UPLOADS_ENABLED = '1';
 process.env.TRUST_IDENTITY_HEADER = 'X-Test-User';
+delete process.env.DEFAULT_VISIBILITY; // exercise the default: private
 delete process.env.BASE_PATH;
 delete process.env.UPLOAD_MAX_BYTES;
 
@@ -40,7 +41,7 @@ test('sharing permissions', async (t) => {
   const put = (url, user, body) => send('PUT', url, user, body);
   const setVis = (docPath, user, body) => put(`/api/file/permissions?path=${encodeURIComponent(docPath)}`, user, body);
 
-  await t.test('docs default to everyone; permissions report it', async () => {
+  await t.test('unclaimed files (pre-existing or anonymous uploads) default to everyone', async () => {
     const res = await get('/api/file/permissions?path=docs/open');
     assert.strictEqual(res.status, 200);
     const p = await res.json();
@@ -48,20 +49,37 @@ test('sharing permissions', async (t) => {
     assert.strictEqual(p.owner, null);
     const meta = await (await get('/api/file?path=docs/open')).json();
     assert.strictEqual(meta.visibility, 'everyone');
+
+    // Anonymous uploads have no owner to be private to.
+    await fetch(`${base}/api/upload/docs/anon.md`, { method: 'PUT', body: '# Anon\n' });
+    const anonP = await (await get('/api/file/permissions?path=docs/anon')).json();
+    assert.strictEqual(anonP.visibility, 'everyone');
+    assert.strictEqual(anonP.owner, null);
   });
 
-  await t.test('identified upload stamps ownership; overwrite keeps the original owner', async () => {
+  await t.test('identified uploads default to private and stamp ownership', async () => {
     const res = await fetch(`${base}/api/upload/ceo/board.md`, { method: 'PUT', body: '# Board plan\n', headers: as(CEO) });
     assert.strictEqual(res.status, 200);
-    await fetch(`${base}/api/upload/ceo/board.md`, { method: 'PUT', body: '# Board plan v2\n', headers: as(CFO) });
+    assert.strictEqual((await res.json()).visibility, 'private');
     const p = await (await get('/api/file/permissions?path=ceo/board', CEO)).json();
     assert.strictEqual(p.owner, CEO);
-    assert.strictEqual(p.visibility, 'everyone');
+    assert.strictEqual(p.visibility, 'private');
+    // Immediately invisible to others, and owner-only for overwrites — so a
+    // second uploader can neither see it nor re-stamp ownership.
+    assert.strictEqual((await get('/api/file?path=ceo/board', EVE)).status, 404);
+    const overwrite = await fetch(`${base}/api/upload/ceo/board.md`, { method: 'PUT', body: 'v2', headers: as(CFO) });
+    assert.strictEqual(overwrite.status, 404);
   });
 
-  await t.test('setting sharing requires an identity; only the owner can change it', async () => {
-    const anon = await setVis('ceo/board', null, { visibility: 'private' });
+  await t.test('changing sharing requires an identity and ownership', async () => {
+    // No identity: 403 even on an unclaimed doc.
+    const anon = await setVis('docs/open', null, { visibility: 'private' });
     assert.strictEqual(anon.status, 403);
+    // Non-readers get 404, not 403 — restricted docs don't reveal themselves.
+    const invisible = await setVis('ceo/board', EVE, { visibility: 'private' });
+    assert.strictEqual(invisible.status, 404);
+    // Readers who aren't the owner get a real 403.
+    await setVis('ceo/board', CEO, { visibility: 'everyone' });
     const other = await setVis('ceo/board', EVE, { visibility: 'private' });
     assert.strictEqual(other.status, 403);
     const bad = await setVis('ceo/board', CEO, { visibility: 'friends' });

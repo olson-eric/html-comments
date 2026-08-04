@@ -13,6 +13,9 @@ process.env.HTML_DIR = ROOT;
 process.env.UPLOADS_ENABLED = '1';
 process.env.UPLOAD_MAX_BYTES = '1000';
 process.env.TRUST_IDENTITY_HEADER = 'X-Test-User';
+// Signed-in uploads default to private; this file tests the upload flows
+// themselves, so pin the open default (permissions.test.js covers sharing).
+process.env.DEFAULT_VISIBILITY = 'everyone';
 delete process.env.BASE_PATH;
 
 fs.mkdirSync(path.join(ROOT, 'docs'));
@@ -26,10 +29,20 @@ test('upload API', async (t) => {
   const base = `http://127.0.0.1:${server.address().port}`;
   t.after(() => server.close());
 
-  await t.test('api/root reports uploads enabled and the size cap', async () => {
+  await t.test('api/root reports uploads enabled, the size cap, and the visibility default', async () => {
     const root = await (await fetch(`${base}/api/root`)).json();
     assert.strictEqual(root.uploadsEnabled, true);
     assert.strictEqual(root.uploadMaxBytes, 1000);
+    assert.strictEqual(root.defaultVisibility, 'everyone');
+  });
+
+  await t.test('DEFAULT_VISIBILITY=everyone keeps identified uploads open (but still owned)', async () => {
+    await fetch(`${base}/api/upload/open/memo.md`, { method: 'PUT', body: '# Memo\n', headers: { 'X-Test-User': 'eric@corp.com' } });
+    const p = await (await fetch(`${base}/api/file/permissions?path=open/memo`)).json();
+    assert.strictEqual(p.visibility, 'everyone');
+    assert.strictEqual(p.owner, 'eric@corp.com');
+    // Visible to anonymous requests, like any unrestricted doc.
+    assert.strictEqual((await fetch(`${base}/api/file?path=open/memo`)).status, 200);
   });
 
   await t.test('PUT creates a new file (and parent dirs) and reports doc path', async () => {
