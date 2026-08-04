@@ -35,6 +35,13 @@ const HOST = process.env.HOST || '0.0.0.0';
 const ROOT = path.resolve(argv[0] || process.env.HTML_DIR || './html');
 const COMMENTS_DIR = path.resolve(process.env.COMMENTS_DIR || path.join(ROOT, '.html-comments'));
 
+// The comment store (comments, permissions.json, events) is app-internal
+// state and must never be readable or writable over HTTP. The default
+// location is dot-prefixed and already excluded by the hidden-segment rules,
+// but a custom COMMENTS_DIR inside the served root wouldn't be — so every
+// path resolver also refuses anything that lands inside it by location.
+const inCommentsDir = (abs) => abs === COMMENTS_DIR || abs.startsWith(COMMENTS_DIR + path.sep);
+
 // File mutations (upload/delete) are strictly opt-in. When unset, every
 // mutating route 403s and the served directory is never written to — the
 // default deployment keeps today's read-only guarantee exactly.
@@ -187,6 +194,7 @@ function resolveFile(relPath) {
   const tryRel = (rel) => {
     const abs = path.resolve(ROOT, rel);
     if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) return null;
+    if (inCommentsDir(abs)) return null;
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
     const kind = fileKind(abs);
     if (!kind) return null;
@@ -209,6 +217,7 @@ function resolveAsset(relPath) {
   if (norm.split('/').some((seg) => seg === '.html-comments')) return null;
   const abs = path.resolve(ROOT, norm);
   if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) return null;
+  if (inCommentsDir(abs)) return null;
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
   return { abs, rel: norm };
 }
@@ -225,6 +234,7 @@ function resolveUploadTarget(relPath) {
   if (!fileKind(norm)) return null;
   const abs = path.resolve(ROOT, norm);
   if (abs === ROOT || !abs.startsWith(ROOT + path.sep)) return null;
+  if (inCommentsDir(abs)) return null;
   if (fs.existsSync(abs) && !fs.statSync(abs).isFile()) return null;
   return { abs, rel: norm };
 }
@@ -247,6 +257,7 @@ function buildTree(absDir, relDir = '', archived = readArchived(), perms = readP
     if (e.name.startsWith('.') || e.name === 'node_modules') continue;
     const childRel = relDir ? `${relDir}/${e.name}` : e.name;
     const childAbs = path.join(absDir, e.name);
+    if (inCommentsDir(childAbs)) continue;
     if (e.isDirectory()) {
       const sub = buildTree(childAbs, childRel, archived, perms, identity);
       if (sub.children.length) children.push(sub);
@@ -865,6 +876,7 @@ function resolveDirTarget(relPath) {
   if (norm.split('/').some((seg) => !seg || seg.startsWith('.') || seg === 'node_modules')) return null;
   const abs = path.resolve(ROOT, norm);
   if (abs === ROOT || !abs.startsWith(ROOT + path.sep)) return null;
+  if (inCommentsDir(abs)) return null;
   return { abs, rel: norm };
 }
 
@@ -888,6 +900,7 @@ function listSupportedFiles(absDir, relDir) {
   const out = [];
   for (const e of fs.readdirSync(absDir, { withFileTypes: true })) {
     if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+    if (inCommentsDir(path.join(absDir, e.name))) continue;
     const rel = `${relDir}/${e.name}`;
     if (e.isDirectory()) out.push(...listSupportedFiles(path.join(absDir, e.name), rel));
     else if (e.isFile() && fileKind(e.name)) out.push(rel);

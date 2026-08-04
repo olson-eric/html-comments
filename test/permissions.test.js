@@ -1,6 +1,7 @@
 const { test, after } = require('node:test');
 const assert = require('node:assert');
 const { once } = require('node:events');
+const { spawn } = require('node:child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -186,6 +187,74 @@ test('sharing permissions', async (t) => {
     assert.strictEqual(p.visibility, 'private');
     assert.strictEqual(p.owner, CEO);
   });
+});
+
+test('the comment store (incl. permissions.json) is unreachable over HTTP', async (t) => {
+  const server = app.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  t.after(() => server.close());
+
+  // Default in-content store: blocked by the hidden-segment rules.
+  assert.strictEqual((await fetch(`${base}/raw/.html-comments/permissions.json`)).status, 404);
+  const put = await fetch(`${base}/api/upload/.html-comments/evil.html`, { method: 'PUT', body: 'x' });
+  assert.strictEqual(put.status, 400);
+});
+
+test('a non-hidden COMMENTS_DIR inside the root is still unreachable over HTTP', async (t) => {
+  const ROOT2 = fs.mkdtempSync(path.join(os.tmpdir(), 'hc-permdir-test-'));
+  fs.writeFileSync(path.join(ROOT2, 'doc.md'), '# Doc\n');
+  const STORE = path.join(ROOT2, 'comment-data');
+  fs.mkdirSync(STORE);
+  fs.writeFileSync(path.join(STORE, 'permissions.json'), JSON.stringify({ files: { 'doc.md': { owner: 'ceo@corp.com', visibility: 'private' } } }));
+  // Bait: a supported file kind inside the store must not resolve either.
+  fs.writeFileSync(path.join(STORE, 'bait.html'), '<html>secret</html>');
+
+  const port = 41000 + Math.floor(Math.random() * 9000);
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js'), ROOT2], {
+    env: {
+      ...process.env,
+      COMMENTS_DIR: STORE,
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      UPLOADS_ENABLED: '1',
+      TRUST_IDENTITY_HEADER: 'X-Test-User',
+    },
+    stdio: 'ignore',
+  });
+  t.after(() => {
+    child.kill();
+    fs.rmSync(ROOT2, { recursive: true, force: true });
+  });
+  const base = `http://127.0.0.1:${port}`;
+  let up = false;
+  for (let i = 0; i < 50 && !up; i++) {
+    try {
+      up = (await fetch(`${base}/health`)).ok;
+    } catch {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  assert.ok(up, 'server did not start');
+
+  // The store entry is live (doc.md is private to CEO)…
+  assert.strictEqual((await fetch(`${base}/api/file?path=doc`)).status, 404);
+  assert.strictEqual((await fetch(`${base}/api/file?path=doc`, { headers: { 'X-Test-User': 'ceo@corp.com' } })).status, 200);
+
+  // …but the store itself can't be read, written into, listed, or moved.
+  assert.strictEqual((await fetch(`${base}/raw/comment-data/permissions.json`)).status, 404);
+  assert.strictEqual((await fetch(`${base}/raw/comment-data/bait.html`)).status, 404);
+  assert.strictEqual((await fetch(`${base}/api/file?path=comment-data/bait`, { headers: { 'X-Test-User': 'ceo@corp.com' } })).status, 404);
+  const put = await fetch(`${base}/api/upload/comment-data/evil.html`, { method: 'PUT', body: 'x', headers: { 'X-Test-User': 'ceo@corp.com' } });
+  assert.strictEqual(put.status, 400);
+  const move = await fetch(`${base}/api/move`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Test-User': 'ceo@corp.com' },
+    body: JSON.stringify({ from: 'comment-data', to: 'stolen' }),
+  });
+  assert.strictEqual(move.status, 404);
+  const tree = await (await fetch(`${base}/api/tree`, { headers: { 'X-Test-User': 'ceo@corp.com' } })).json();
+  assert.strictEqual(tree.children.find((c) => c.name === 'comment-data'), undefined);
 });
 
 after(() => {
