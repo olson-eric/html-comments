@@ -37,6 +37,26 @@
           <span>You:</span>
           <input type="text" id="author" placeholder="Your name" />
         </label>
+        <div class="share-wrap" id="share-wrap" hidden>
+          <button id="share-btn" type="button" aria-haspopup="true" aria-expanded="false">Share</button>
+          <div id="share-popover" class="copy-link-popover share-popover" hidden>
+            <label class="share-option">
+              <input type="radio" name="share-vis" value="everyone" />
+              <span><strong>Everyone</strong> — anyone on this deployment</span>
+            </label>
+            <label class="share-option">
+              <input type="radio" name="share-vis" value="shared" />
+              <span><strong>Specific people</strong></span>
+            </label>
+            <textarea id="share-emails" rows="2" placeholder="one email per line or comma-separated" hidden></textarea>
+            <label class="share-option">
+              <input type="radio" name="share-vis" value="private" />
+              <span><strong>Private</strong> — only you</span>
+            </label>
+            <p class="copy-link-hint" id="share-owner-hint" hidden></p>
+            <button id="share-save" type="button">Save</button>
+          </div>
+        </div>
         <div class="copy-link-wrap">
           <div class="copy-link-split">
             <button id="copy-link" type="button">

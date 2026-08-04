@@ -38,6 +38,22 @@ When `TRUST_IDENTITY_HEADER` is configured, the destination is prefilled with yo
 
 Hovering a row in the file tree shows two more actions: **rename/move** (✎ — old links redirect to the new location, comments come along) and **archive** (🗄 — hides the file behind a "Show archived" toggle without touching its link or comments; unarchive puts it back).
 
+## Sharing
+
+On deployments with a verified identity (`TRUST_IDENTITY_HEADER`, see below), every document can be shared at one of three levels:
+
+- **Private** — only the owner. This is the default for documents you upload while signed in.
+- **Specific people** — only the owner and a list of identities (usually emails) can see it.
+- **Everyone** — anyone on the deployment can see it. This is the standing behavior for *unowned* documents: files that predate the feature, were synced into the served directory from outside, or were uploaded without an identity — there is no owner for them to be private to. Set `DEFAULT_VISIBILITY=everyone` if you'd rather signed-in uploads start open too.
+
+The viewer grows a **Share** button when you're signed in: pick a level, list people if applicable, save. Ownership is stamped by your first upload of a path (or your first change to its sharing, for unowned files — that's also how you take charge of pre-existing content); only the owner can change a document's sharing or — once it's restricted — overwrite, move, archive, or delete it. Anyone who can *see* a shared document can comment on it: a reviewer who can't comment would defeat the point.
+
+The file tree is the discovery surface, and it's filtered per viewer: `/api/tree` (and the browser UI built on it) lists only what the requesting identity can read — your own documents, ones shared with you, and "everyone" documents, wherever they live in the folder hierarchy. Folders (including the suggested per-user home folders) are organization, not access control; a folder with nothing you can read simply doesn't appear.
+
+Restriction is enforced everywhere the document surfaces: it disappears from the file tree, its viewer link and every API route return 404 (existence isn't leaked), and its events are filtered out of the `/api/updates` change feed for anyone who can't read it. Because agents authenticate as a user (see the deployment section below), an agent sees exactly what the person it's acting for sees.
+
+Sharing state lives in `<comments-dir>/permissions.json`, beside the comment stores. Entries survive renames and delete/re-upload — a restricted path can't be squatted by re-uploading over it — and everything is per-document; there are no groups, roles, or folder inheritance. Requests with no identity (including all traffic on deployments that never set `TRUST_IDENTITY_HEADER`) see only "everyone" documents — on an identity-less deployment that is every document, exactly as before this feature existed.
+
 ## Dark mode
 
 The app chrome (file browser, viewer, and comment sidebar) has a built-in dark
@@ -82,11 +98,20 @@ Files are identified by their extension-free doc path relative to the served roo
 | `GET` | `/health` | Liveness check, returns `{ "ok": true }` (also served un-prefixed at the root when `BASE_PATH` is set) |
 | `GET` | `/api/root` | Absolute path of the served root + configured `basePath` |
 | `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`image`) and comment counts |
-| `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Kinds: `created`, `replied`, `resolved`, `unresolved`, `deleted` (comment events) and `uploaded`, `removed`, `moved`, `archived`, `unarchived` (file events). Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
+| `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Kinds: `created`, `replied`, `resolved`, `unresolved`, `deleted` (comment events) and `uploaded`, `removed`, `moved`, `archived`, `unarchived`, `shared` (file events). Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
 | `GET` | `/api/file?path=...` | File metadata (incl. `kind`) + all comments |
 | `GET` | `/api/file/html?path=...` | The raw HTML; for markdown, the *rendered* HTML (the text anchors index into) |
 | `GET` | `/raw/<file>` | The file as-is, by real filename (use this for markdown source / image bytes / sibling assets) |
 | `GET` | `/render/<path>` | Markdown rendered as a standalone HTML page (what the viewer's iframe shows) |
+
+### Sharing
+
+Documents restricted via sharing return 404 on every route (tree, file, comments, viewer, `/raw/`, `/render/`) unless the request carries an identity that can read them, and their events are filtered out of `/api/updates`.
+
+| Method | Path | Body | Description |
+| --- | --- | --- | --- |
+| `GET` | `/api/file/permissions?path=...` | — | Current sharing: `{ visibility: "everyone"\|"shared"\|"private", owner, sharedWith }` |
+| `PUT` | `/api/file/permissions?path=...` | `{ visibility, sharedWith? }` | Set sharing. Requires a verified identity; owner-only once the document has one (the first identified upload — or first sharing change — claims ownership). `sharedWith` (array of identities) is required for `visibility: "shared"`. |
 
 ### Comments
 
@@ -104,7 +129,7 @@ Off by default. Set `UPLOADS_ENABLED=1` to allow publishing and deleting files o
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `PUT` | `/api/upload/<path>` | Write the raw request body to `<path>` (a real filename with extension, e.g. `docs/spec.html`). Parent directories are created. Overwriting is the update flow — the doc path, shared links, and comment threads all stay put. Responds `{ path, file, bytes, updated }`. |
+| `PUT` | `/api/upload/<path>` | Write the raw request body to `<path>` (a real filename with extension, e.g. `docs/spec.html`). Parent directories are created. Overwriting is the update flow — the doc path, shared links, and comment threads all stay put. Responds `{ path, file, bytes, updated, visibility }` — an identified first upload of a path claims ownership at `DEFAULT_VISIBILITY`, so check `visibility` to know whether the page needs sharing before its link works for others. |
 | `DELETE` | `/api/upload/<path>` | Delete a file (doc path or real filename). The comment store is kept, so re-uploading the same path restores its threads. |
 
 ```bash
@@ -168,7 +193,8 @@ curl -s "http://localhost:4747/api/updates?since=$SINCE" \
 - `HOST` (default `0.0.0.0`)
 - `UPLOADS_ENABLED` (default off) — enable the file upload/delete API (and the Upload button in the UI). When off, the served directory is never written to.
 - `UPLOAD_MAX_BYTES` (default `20971520`, 20 MB) — per-file upload size cap.
-- `TRUST_IDENTITY_HEADER` (default unset) — name of a request header carrying a verified identity, e.g. `X-Forwarded-Email` from an authenticating reverse proxy. When set, the header value stamps authorship on comments, replies, and uploads (overriding any client-supplied name — the UI shows the signed-in name and locks the field), appears in audit logs, and `/api/root` reports it (with a derived home-folder suggestion, e.g. `eric.olson@corp.com` → `eric_olson`). **Only set this when an auth proxy in front of the app strips inbound copies of the header** — otherwise any client can spoof it. Leave unset (the default) and authorship stays client-supplied exactly as before.
+- `DEFAULT_VISIBILITY` (default `private`) — what a signed-in user's first upload of a path defaults to: `private` (only the uploader until they share it) or `everyone`. Only meaningful alongside `TRUST_IDENTITY_HEADER`; anonymous uploads have no owner and are always visible to everyone.
+- `TRUST_IDENTITY_HEADER` (default unset) — name of a request header carrying a verified identity, e.g. `X-Forwarded-Email` from an authenticating reverse proxy. When set, the header value stamps authorship on comments, replies, and uploads (overriding any client-supplied name — the UI shows the signed-in name and locks the field), appears in audit logs, `/api/root` reports it (with a derived home-folder suggestion, e.g. `eric.olson@corp.com` → `eric_olson`), and it is the identity that per-document [sharing](#sharing) is evaluated against. **Only set this when an auth proxy in front of the app strips inbound copies of the header** — otherwise any client can spoof it. Leave unset (the default) and authorship stays client-supplied exactly as before.
 
 ## Deployment
 
@@ -217,15 +243,21 @@ To enable HTTP publishing (uploads, rename, archive) on a hosted deployment:
 - **docker-compose**: `UPLOADS_ENABLED=1 CONTENT_MODE=rw docker compose up -d` (the content mount must be writable) — or `make compose-up-writable`.
 - **Helm**: set `content.readOnly: false` and `env.UPLOADS_ENABLED: "1"`; add `env.TRUST_IDENTITY_HEADER: "X-Forwarded-Email"` (or whatever your auth proxy sets) so uploads and comments are attributed to the signed-in user.
 
-Be deliberate about the access model — the app itself has no auth, so the deployment provides it in two layers:
+Be deliberate about the access model — the app itself has no auth; the deployment provides it, and how much it provides determines how much of the sharing feature you get.
 
-- **Humans** come through your authenticating proxy (oauth2-proxy sidecar via `extraContainers`, an SSO-enforcing ingress, etc.), which verifies them and sets the identity header. The proxy **must strip inbound copies** of that header or clients can spoof identities.
-- **Agents** (Claude Code, or anything driving the JSON API) typically can't complete an SSO redirect. The supported pattern is a trusted internal route that bypasses the proxy: the cluster-internal Service DNS, a VPN/Tailscale address, or `kubectl port-forward`. Requests on that route carry no identity header, so they're attributed to the author the agent supplies.
+**Recommended: an auth sidecar in front of everything.** Run an authenticating proxy (via `extraContainers`, or your gateway of choice) as the *only* route to the app, and have it authenticate both kinds of traffic:
 
-The consequence to be clear-eyed about: **anyone who can reach the pod directly can read and write everything under any name.** The proxy protects humans; the network boundary protects the API. Only run writable deployments where that boundary holds (private cluster networks, VPNs). Per-agent API tokens and an MCP integration are planned follow-ups for setups that need agent auth stronger than network trust.
+- **Humans** sign in through it (SSO, OIDC, whatever your org uses); the proxy sets the identity header on their requests.
+- **Agents** (Claude Code, or anything driving the JSON API) pass a token the proxy understands — a bearer token, API key, or service credential mapped to the user it acts for — and the proxy sets the *same identity header* with that user's identity.
+
+The proxy **must strip inbound copies** of the identity header before setting its own, or any client can spoof identities. With this shape, sharing is fully enforced for every request: your agent sees exactly the documents you can see, and the CEO's private docs are private against humans and agents alike. Teams bringing their own auth just need their sidecar to do one thing: turn "who is this request from" into one trusted header.
+
+**Fallback: a trusted internal route.** If your agents can't carry a token, the older pattern still works: let them reach the pod directly (cluster-internal Service DNS, VPN/Tailscale, `kubectl port-forward`), bypassing the proxy. Requests on that route carry no identity, so they're attributed to the author the agent supplies — and under sharing they're treated as anonymous: they can read and write only "everyone" documents and can never see or modify restricted ones. The consequence to be clear-eyed about: **anyone who can reach the pod directly can read and write every *unrestricted* document under any name.** Only run writable deployments where that network boundary holds (private cluster networks, VPNs).
 
 ## Security notes
 
 Pages render inside an `<iframe sandbox="allow-same-origin allow-scripts allow-popups allow-forms">`. Scripts in the rendered HTML can run; only host pages you trust. Markdown is rendered with HTML escaped and link/image URLs restricted to http(s)/mailto/relative. There is no authentication — put it behind your dev-server's auth (basic auth, Tailscale, etc.) if you want to share with coworkers over the public internet.
 
-Paths are validated to stay within the configured root. The file API serves `.html`/`.htm`, markdown, and image files; sibling assets (images, CSS, etc.) referenced by relative URLs are served from `/raw/<path>` under the same root, with the same traversal protection. The `.html-comments` directory is never exposed via `/raw/`.
+Per-document sharing is an access-control layer *on top of* the deployment's auth, not a replacement for it: it's only as trustworthy as the identity header your proxy sets, and it does nothing on deployments where requests can reach the app without one.
+
+Paths are validated to stay within the configured root. The file API serves `.html`/`.htm`, markdown, and image files; sibling assets (images, CSS, etc.) referenced by relative URLs are served from `/raw/<path>` under the same root, with the same traversal protection. The comment store (comment JSON, `permissions.json`, the event log) is never reachable over HTTP — every path resolver refuses anything inside `COMMENTS_DIR` by location, wherever it's configured to live, so sharing state can only be read or changed through the permissions API and its identity/ownership checks. Direct access to the store requires filesystem access to the pod or its comments volume, which the deployment should treat as operator-only.

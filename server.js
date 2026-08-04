@@ -35,6 +35,13 @@ const HOST = process.env.HOST || '0.0.0.0';
 const ROOT = path.resolve(argv[0] || process.env.HTML_DIR || './html');
 const COMMENTS_DIR = path.resolve(process.env.COMMENTS_DIR || path.join(ROOT, '.html-comments'));
 
+// The comment store (comments, permissions.json, events) is app-internal
+// state and must never be readable or writable over HTTP. The default
+// location is dot-prefixed and already excluded by the hidden-segment rules,
+// but a custom COMMENTS_DIR inside the served root wouldn't be — so every
+// path resolver also refuses anything that lands inside it by location.
+const inCommentsDir = (abs) => abs === COMMENTS_DIR || abs.startsWith(COMMENTS_DIR + path.sep);
+
 // File mutations (upload/delete) are strictly opt-in. When unset, every
 // mutating route 403s and the served directory is never written to — the
 // default deployment keeps today's read-only guarantee exactly.
@@ -50,6 +57,14 @@ const UPLOAD_MAX_BYTES = (() => {
 // client could spoof it. When set, the header value overrides client-supplied
 // author names on comments, replies, and uploads.
 const TRUST_IDENTITY_HEADER = String(process.env.TRUST_IDENTITY_HEADER || '').trim().toLowerCase();
+
+// What a signed-in user's new uploads default to: 'private' (only the
+// uploader until they share) or 'everyone'. Only meaningful alongside
+// TRUST_IDENTITY_HEADER — anonymous uploads have no owner to be private to,
+// so they are always visible to everyone. Unknown values fall back to
+// 'private', the safe direction.
+const DEFAULT_VISIBILITY =
+  String(process.env.DEFAULT_VISIBILITY || '').trim().toLowerCase() === 'everyone' ? 'everyone' : 'private';
 
 function identityFor(req) {
   if (!TRUST_IDENTITY_HEADER) return null;
@@ -179,6 +194,7 @@ function resolveFile(relPath) {
   const tryRel = (rel) => {
     const abs = path.resolve(ROOT, rel);
     if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) return null;
+    if (inCommentsDir(abs)) return null;
     if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
     const kind = fileKind(abs);
     if (!kind) return null;
@@ -201,6 +217,7 @@ function resolveAsset(relPath) {
   if (norm.split('/').some((seg) => seg === '.html-comments')) return null;
   const abs = path.resolve(ROOT, norm);
   if (abs !== ROOT && !abs.startsWith(ROOT + path.sep)) return null;
+  if (inCommentsDir(abs)) return null;
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null;
   return { abs, rel: norm };
 }
@@ -217,6 +234,7 @@ function resolveUploadTarget(relPath) {
   if (!fileKind(norm)) return null;
   const abs = path.resolve(ROOT, norm);
   if (abs === ROOT || !abs.startsWith(ROOT + path.sep)) return null;
+  if (inCommentsDir(abs)) return null;
   if (fs.existsSync(abs) && !fs.statSync(abs).isFile()) return null;
   return { abs, rel: norm };
 }
@@ -227,7 +245,7 @@ function writeFileAtomic(file, buf) {
   fs.renameSync(tmp, file);
 }
 
-function buildTree(absDir, relDir = '', archived = readArchived()) {
+function buildTree(absDir, relDir = '', archived = readArchived(), perms = readPerms(), identity = null) {
   let entries;
   try {
     entries = fs.readdirSync(absDir, { withFileTypes: true });
@@ -239,10 +257,12 @@ function buildTree(absDir, relDir = '', archived = readArchived()) {
     if (e.name.startsWith('.') || e.name === 'node_modules') continue;
     const childRel = relDir ? `${relDir}/${e.name}` : e.name;
     const childAbs = path.join(absDir, e.name);
+    if (inCommentsDir(childAbs)) continue;
     if (e.isDirectory()) {
-      const sub = buildTree(childAbs, childRel, archived);
+      const sub = buildTree(childAbs, childRel, archived, perms, identity);
       if (sub.children.length) children.push(sub);
     } else if (e.isFile() && fileKind(e.name)) {
+      if (!canReadRel(childRel, identity, perms)) continue;
       const data = readComments(childRel);
       const open = data.comments.filter((c) => !c.resolved).length;
       const node = {
@@ -255,6 +275,8 @@ function buildTree(absDir, relDir = '', archived = readArchived()) {
         openCount: open,
       };
       if (archived.has(childRel)) node.archived = true;
+      const p = perms[childRel];
+      if (p && p.visibility !== 'everyone') node.visibility = p.visibility;
       children.push(node);
     }
   }
@@ -309,6 +331,66 @@ function readArchived() {
 
 function writeArchived(set) {
   writeJsonAtomic(ARCHIVE_FILE, { files: [...set].sort() });
+}
+
+// Per-document sharing, keyed by real relative filename (same as comment
+// stores): { owner, visibility: 'private'|'shared'|'everyone', sharedWith }.
+// No entry means visible to everyone — sharing is strictly opt-in per doc, so
+// deployments without an identity source behave exactly as before. Identities
+// come from TRUST_IDENTITY_HEADER; the recommended deployment runs an auth
+// sidecar in front that authenticates humans *and* agents and stamps that
+// header, so agent visibility follows the user whose token the agent holds.
+const PERMS_FILE = path.join(COMMENTS_DIR, 'permissions.json');
+const VISIBILITIES = ['private', 'shared', 'everyone'];
+const SHARED_WITH_MAX = 200;
+
+function readPerms() {
+  try {
+    return JSON.parse(fs.readFileSync(PERMS_FILE, 'utf8')).files || {};
+  } catch {
+    return {};
+  }
+}
+
+function writePerms(files) {
+  writeJsonAtomic(PERMS_FILE, { files });
+}
+
+const normIdentity = (s) => String(s || '').trim().toLowerCase();
+
+function canReadRel(rel, identity, perms = readPerms()) {
+  const p = perms[rel];
+  if (!p || p.visibility === 'everyone') return true;
+  if (!identity) return false;
+  const who = normIdentity(identity);
+  if (normIdentity(p.owner) === who) return true;
+  return p.visibility === 'shared' && (p.sharedWith || []).some((e) => normIdentity(e) === who);
+}
+
+function canRead(req, rel) {
+  return canReadRel(rel, identityFor(req));
+}
+
+// File mutations (overwrite, delete, move, archive) on a restricted doc are
+// owner-only. Unrestricted docs keep today's anyone-can-touch behavior.
+function canMutateRel(rel, identity, perms = readPerms()) {
+  const p = perms[rel];
+  if (!p || p.visibility === 'everyone') return true;
+  return !!identity && normIdentity(p.owner) === normIdentity(identity);
+}
+
+// Restricted docs 404 (not 403) for outsiders so their existence doesn't leak.
+function requireReadable(req, res, rel) {
+  if (canRead(req, rel)) return true;
+  res.status(404).json({ error: 'not found' });
+  return false;
+}
+
+function requireMutable(req, res, rel) {
+  if (!requireReadable(req, res, rel)) return false;
+  if (canMutateRel(rel, identityFor(req))) return true;
+  res.status(403).json({ error: 'only the owner can modify this file' });
+  return false;
 }
 
 // Renames leave tombstones (old doc path → new doc path) so links pasted
@@ -481,26 +563,33 @@ router.get('/api/root', (req, res) => {
     basePath: BASE_PATH,
     uploadsEnabled: UPLOADS_ENABLED,
     uploadMaxBytes: UPLOAD_MAX_BYTES,
+    defaultVisibility: DEFAULT_VISIBILITY,
     identity: user ? { user, home: homeSlugFor(user) } : null,
   });
 });
 
-router.get('/api/tree', (_req, res) => {
-  res.json(buildTree(ROOT));
+router.get('/api/tree', (req, res) => {
+  res.json(buildTree(ROOT, '', readArchived(), readPerms(), identityFor(req)));
 });
 
 // Recent activity across all files, oldest first. Poll with the returned
 // `now` as the next `since` to get exactly-once delivery of new events.
+// Events on restricted docs are only shown to identities that can read them.
 router.get('/api/updates', (req, res) => {
   const since = typeof req.query.since === 'string' && req.query.since ? req.query.since : null;
-  res.json({ now: new Date().toISOString(), since, events: readEvents(since) });
+  const perms = readPerms();
+  const identity = identityFor(req);
+  const events = readEvents(since).filter((e) => !e.file || canReadRel(e.file, identity, perms));
+  res.json({ now: new Date().toISOString(), since, events });
 });
 
 router.get('/api/file', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
   const stat = fs.statSync(f.abs);
   const data = readComments(f.rel);
+  const p = readPerms()[f.rel];
   res.json({
     path: f.doc,
     file: f.rel,
@@ -510,6 +599,7 @@ router.get('/api/file', (req, res) => {
     size: stat.size,
     modifiedAt: stat.mtime.toISOString(),
     archived: readArchived().has(f.rel) || undefined,
+    visibility: p ? p.visibility : 'everyone',
     comments: data.comments,
   });
 });
@@ -519,6 +609,7 @@ router.get('/api/file', (req, res) => {
 router.get('/api/file/html', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).send('not found');
+  if (!canRead(req, f.rel)) return res.status(404).send('not found');
   if (f.kind === 'image') return res.status(400).json({ error: 'not renderable as html; fetch via /raw/' });
   if (f.kind === 'markdown') {
     return res.type('text/html; charset=utf-8').send(markdownDocument(f));
@@ -529,6 +620,7 @@ router.get('/api/file/html', (req, res) => {
 router.get('/api/file/comments', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
   const data = readComments(f.rel);
   let comments = data.comments;
   const status = req.query.status;
@@ -561,9 +653,12 @@ function normalizeAnchor(anchor) {
   return null;
 }
 
+// Anyone who can read a doc can comment on it — a reviewer who can't leave
+// comments would defeat the point of sharing a doc for review.
 router.post('/api/file/comments', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
   const { anchor, text, author } = req.body || {};
   if (!anchor || typeof anchor !== 'object') return res.status(400).json({ error: 'anchor required' });
   const stored = normalizeAnchor(anchor);
@@ -592,6 +687,7 @@ router.post('/api/file/comments', (req, res) => {
 router.post('/api/file/comments/:cid/replies', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
   const { text, author } = req.body || {};
   if (!text) return res.status(400).json({ error: 'text required' });
   const data = readComments(f.rel);
@@ -612,6 +708,7 @@ router.post('/api/file/comments/:cid/replies', (req, res) => {
 router.patch('/api/file/comments/:cid', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
   const data = readComments(f.rel);
   const comment = data.comments.find((c) => c.id === req.params.cid);
   if (!comment) return res.status(404).json({ error: 'comment not found' });
@@ -631,6 +728,7 @@ router.patch('/api/file/comments/:cid', (req, res) => {
 router.delete('/api/file/comments/:cid', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
   const data = readComments(f.rel);
   const idx = data.comments.findIndex((c) => c.id === req.params.cid);
   if (idx === -1) return res.status(404).json({ error: 'comment not found' });
@@ -638,6 +736,55 @@ router.delete('/api/file/comments/:cid', (req, res) => {
   writeComments(f.rel, data);
   recordEvent('deleted', f, { commentId: removed.id, author: identityFor(req) || undefined });
   res.json({ ok: true });
+});
+
+// ----- Sharing -----
+// Available regardless of UPLOADS_ENABLED (read-only deployments share too),
+// but changing permissions always requires a verified identity — without an
+// auth layer stamping TRUST_IDENTITY_HEADER, "private" would be theater.
+router.get('/api/file/permissions', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
+  const p = readPerms()[f.rel];
+  res.json({
+    path: f.doc,
+    file: f.rel,
+    visibility: p ? p.visibility : 'everyone',
+    owner: (p && p.owner) || null,
+    sharedWith: (p && p.sharedWith) || [],
+  });
+});
+
+router.put('/api/file/permissions', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
+  const identity = identityFor(req);
+  if (!identity) {
+    return res.status(403).json({ error: 'sharing requires a verified identity (TRUST_IDENTITY_HEADER)' });
+  }
+  const perms = readPerms();
+  const existing = perms[f.rel];
+  if (existing && existing.owner && normIdentity(existing.owner) !== normIdentity(identity)) {
+    return res.status(403).json({ error: 'only the owner can change sharing' });
+  }
+  const { visibility, sharedWith } = req.body || {};
+  if (!VISIBILITIES.includes(visibility)) {
+    return res.status(400).json({ error: `visibility must be one of ${VISIBILITIES.join(', ')}` });
+  }
+  const entry = { owner: (existing && existing.owner) || identity, visibility };
+  if (visibility === 'shared') {
+    if (!Array.isArray(sharedWith) || sharedWith.some((e) => typeof e !== 'string')) {
+      return res.status(400).json({ error: 'sharedWith (array of identity strings) required for visibility "shared"' });
+    }
+    entry.sharedWith = [...new Set(sharedWith.map(normIdentity).filter(Boolean))].slice(0, SHARED_WITH_MAX);
+  }
+  perms[f.rel] = entry;
+  writePerms(perms);
+  audit(req, 'share', `${f.rel} visibility=${visibility}`);
+  recordEvent('shared', f, { author: identity, visibility });
+  res.json({ path: f.doc, file: f.rel, ...entry });
 });
 
 function requireUploads(_req, res, next) {
@@ -673,19 +820,34 @@ router.put(
         error: 'invalid upload path: must stay inside the served root, contain no hidden segments, and end in a supported extension (.html/.htm/.md/.markdown or an image type)',
       });
     }
+    // The permissions entry outlives the file (like its comment store), so a
+    // restricted path stays owner-only across delete/re-upload.
+    if (!requireMutable(req, res, target.rel)) return;
     const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
     if (!body.length) return res.status(400).json({ error: 'empty body' });
     const updated = fs.existsSync(target.abs);
     fs.mkdirSync(path.dirname(target.abs), { recursive: true });
     writeFileAtomic(target.abs, body);
+    // First identified upload of a path claims ownership at the configured
+    // default visibility; an existing entry is never re-stamped.
+    const identity = identityFor(req);
+    let visibility = 'everyone';
+    {
+      const perms = readPerms();
+      if (identity && !perms[target.rel]) {
+        perms[target.rel] = { owner: identity, visibility: DEFAULT_VISIBILITY };
+        writePerms(perms);
+      }
+      if (perms[target.rel]) visibility = perms[target.rel].visibility;
+    }
     audit(req, updated ? 'update' : 'upload', `${target.rel} ${body.length}b`);
     const doc = docPathFor(target.rel);
     recordEvent('uploaded', { doc, rel: target.rel }, {
-      author: identityFor(req) || undefined,
+      author: identity || undefined,
       bytes: body.length,
       updated,
     });
-    res.json({ path: doc, file: target.rel, bytes: body.length, updated });
+    res.json({ path: doc, file: target.rel, bytes: body.length, updated, visibility });
   }
 );
 
@@ -696,6 +858,7 @@ router.delete(/^\/api\/upload\/(.+)$/, requireUploads, (req, res) => {
   if (rel === null) return res.status(400).json({ error: 'bad request' });
   const f = resolveFile(rel);
   if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireMutable(req, res, f.rel)) return;
   fs.unlinkSync(f.abs);
   audit(req, 'delete', f.rel);
   recordEvent('removed', f, { author: identityFor(req) || undefined });
@@ -713,10 +876,11 @@ function resolveDirTarget(relPath) {
   if (norm.split('/').some((seg) => !seg || seg.startsWith('.') || seg === 'node_modules')) return null;
   const abs = path.resolve(ROOT, norm);
   if (abs === ROOT || !abs.startsWith(ROOT + path.sep)) return null;
+  if (inCommentsDir(abs)) return null;
   return { abs, rel: norm };
 }
 
-function migrateFileMeta(oldRel, newRel, archived) {
+function migrateFileMeta(oldRel, newRel, archived, perms) {
   const oldComments = commentsFile(oldRel);
   if (fs.existsSync(oldComments)) {
     const data = readComments(oldRel);
@@ -724,12 +888,19 @@ function migrateFileMeta(oldRel, newRel, archived) {
     fs.unlinkSync(oldComments);
   }
   if (archived.delete(oldRel)) archived.add(newRel);
+  if (perms[oldRel]) {
+    // Copy rather than move: change-feed events recorded under the old
+    // filename stay filtered for non-readers, and the vacated path keeps its
+    // owner (so it can't be re-claimed by someone else), same as a delete.
+    perms[newRel] = perms[oldRel];
+  }
 }
 
 function listSupportedFiles(absDir, relDir) {
   const out = [];
   for (const e of fs.readdirSync(absDir, { withFileTypes: true })) {
     if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+    if (inCommentsDir(path.join(absDir, e.name))) continue;
     const rel = `${relDir}/${e.name}`;
     if (e.isDirectory()) out.push(...listSupportedFiles(path.join(absDir, e.name), rel));
     else if (e.isFile() && fileKind(e.name)) out.push(rel);
@@ -747,9 +918,11 @@ router.post('/api/move', requireUploads, (req, res) => {
   }
   const who = identityFor(req) || undefined;
   const archived = readArchived();
+  const perms = readPerms();
 
   const f = resolveFile(from);
   if (f) {
+    if (!requireMutable(req, res, f.rel)) return;
     const target = resolveUploadTarget(to);
     if (!target) {
       return res.status(400).json({ error: 'invalid destination: must stay inside the served root, contain no hidden segments, and end in a supported extension' });
@@ -757,8 +930,9 @@ router.post('/api/move', requireUploads, (req, res) => {
     if (fs.existsSync(target.abs)) return res.status(409).json({ error: 'destination already exists' });
     fs.mkdirSync(path.dirname(target.abs), { recursive: true });
     fs.renameSync(f.abs, target.abs);
-    migrateFileMeta(f.rel, target.rel, archived);
+    migrateFileMeta(f.rel, target.rel, archived, perms);
     writeArchived(archived);
+    writePerms(perms);
     const newDoc = docPathFor(target.rel);
     if (newDoc !== f.doc) recordMove(f.doc, newDoc);
     audit(req, 'move', `${f.rel} -> ${target.rel}`);
@@ -781,15 +955,22 @@ router.post('/api/move', requireUploads, (req, res) => {
     return res.status(400).json({ error: 'cannot move a folder into itself' });
   }
   const oldDocs = new Map(listSupportedFiles(src.abs, src.rel).map((rel) => [rel, docPathFor(rel)]));
+  // A folder move relocates every descendant, so it needs mutate rights on
+  // all of them — one restricted doc owned by someone else blocks the move.
+  const identity = identityFor(req);
+  if ([...oldDocs.keys()].some((rel) => !canMutateRel(rel, identity, perms))) {
+    return res.status(403).json({ error: 'folder contains restricted files only their owner can move' });
+  }
   fs.mkdirSync(path.dirname(dst.abs), { recursive: true });
   fs.renameSync(src.abs, dst.abs);
   for (const [oldRel, oldDoc] of oldDocs) {
     const newRel = dst.rel + oldRel.slice(src.rel.length);
-    migrateFileMeta(oldRel, newRel, archived);
+    migrateFileMeta(oldRel, newRel, archived, perms);
     const newDoc = docPathFor(newRel);
     if (newDoc !== oldDoc) recordMove(oldDoc, newDoc);
   }
   writeArchived(archived);
+  writePerms(perms);
   audit(req, 'move', `${src.rel}/ -> ${dst.rel}/`);
   recordEvent('moved', { doc: dst.rel, rel: dst.rel }, { from: src.rel, folder: true, author: who });
   res.json({ path: dst.rel, from: src.rel, folder: true });
@@ -801,6 +982,7 @@ router.post('/api/move', requireUploads, (req, res) => {
 router.post('/api/archive', requireUploads, (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireMutable(req, res, f.rel)) return;
   const flag = (req.body || {}).archived;
   if (typeof flag !== 'boolean') return res.status(400).json({ error: 'archived (boolean) required' });
   const archived = readArchived();
@@ -821,6 +1003,10 @@ router.get(/^\/raw\/(.+)$/, (req, res) => {
   }
   const f = resolveAsset(rel);
   if (!f) return res.status(404).send('not found');
+  // /raw/ also serves sibling assets (css, fonts) that aren't docs and carry
+  // no permissions; anything that IS a doc kind gets the same gate as the
+  // rest of the API so restricted pages can't be fetched by real filename.
+  if (fileKind(f.rel) && !canRead(req, f.rel)) return res.status(404).send('not found');
   res.sendFile(f.abs);
 });
 
@@ -834,6 +1020,7 @@ router.get(/^\/render\/(.+)$/, (req, res) => {
   }
   const f = resolveFile(rel);
   if (!f || f.kind !== 'markdown') return res.status(404).send('not found');
+  if (!canRead(req, f.rel)) return res.status(404).send('not found');
   res.type('text/html; charset=utf-8').send(markdownDocument(f));
 });
 
@@ -858,6 +1045,7 @@ router.get(/^\/v\/(.+)$/, (req, res) => {
     }
     return res.status(404).send('File not found');
   }
+  if (!canRead(req, f.rel)) return res.status(404).send('File not found');
   if (rel !== f.doc) return res.redirect(`${BASE_PATH}/v/${encodePath(f.doc)}${keepQuery(req)}`);
   res.type('text/html; charset=utf-8').send(pageHtml('viewer.html'));
 });
@@ -865,7 +1053,7 @@ router.get(/^\/v\/(.+)$/, (req, res) => {
 // Legacy /v?path=... links redirect to the extension-free form.
 router.get('/v', (req, res) => {
   const f = resolveFile(req.query.path);
-  if (!f) return res.status(404).send('File not found');
+  if (!f || !canRead(req, f.rel)) return res.status(404).send('File not found');
   res.redirect(`${BASE_PATH}/v/${encodePath(f.doc)}${keepQuery(req, ['path'])}`);
 });
 

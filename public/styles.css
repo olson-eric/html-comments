@@ -122,6 +122,32 @@ button.theme-toggle {
 }
 
 .copy-link-wrap { position: relative; }
+.share-wrap { position: relative; }
+.share-wrap[hidden] { display: none; }
+.share-popover { width: 280px; }
+.copy-link-popover label.share-option {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.4rem;
+  color: var(--text);
+  cursor: pointer;
+}
+.share-popover textarea {
+  margin-left: 1.3rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--text);
+  background: var(--surface);
+  resize: vertical;
+}
+.share-popover #share-save {
+  align-self: flex-end;
+  font-size: 0.85rem;
+}
+#share-btn.restricted { color: var(--accent); }
 .copy-link-split { display: flex; }
 .copy-link-split #copy-link {
   border-top-right-radius: 0;
@@ -811,6 +837,10 @@ button.linklike {
 }
 .tree-action:hover { color: var(--accent); }
 .tree-file-row.archived .tree-name { color: var(--muted); text-decoration: line-through; }
+.badge-restricted {
+  font-size: 0.72rem;
+  line-height: 1;
+}
 .badge-archived {
   background: var(--border);
   color: var(--muted);

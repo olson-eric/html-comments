@@ -56,6 +56,7 @@ DELETE /api/file/comments/:cid?path=foo/bar</code></pre>
       <form method="dialog" id="upload-form">
         <h3>Upload files</h3>
         <p class="muted">Publish <code>.html</code>, <code>.md</code>, or image files. Re-uploading to the same folder and name updates the page — its link and comments stay put.</p>
+        <p id="upload-privacy-hint" class="muted" hidden>New uploads are <strong>private to you</strong> until you share them from the viewer's Share button.</p>
         <label class="upload-label" for="upload-dest">Folder</label>
         <input id="upload-dest" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. my_name/project" />
         <div id="upload-drop" class="upload-drop" tabindex="0">

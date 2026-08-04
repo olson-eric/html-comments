@@ -18,6 +18,11 @@ async function loadRoot() {
     if (info.identity && info.identity.home) {
       document.getElementById('upload-dest').value = info.identity.home;
     }
+    // Signed-in uploads default to private (unless the deployment overrides
+    // DEFAULT_VISIBILITY); say so up front rather than surprising people.
+    if (info.identity && info.defaultVisibility === 'private') {
+      document.getElementById('upload-privacy-hint').hidden = false;
+    }
   }
 }
 
@@ -161,10 +166,16 @@ function renderNode(node, depth) {
         : '';
     const icon = { html: '📄', markdown: '📝', image: '🖼️' }[node.kind] || '📄';
     if (node.archived) a.classList.add('archived');
+    // The server only returns docs this viewer can read; the lock just marks
+    // ones that are restricted (private to you, or shared with a list).
+    const lock = node.visibility
+      ? `<span class="badge badge-restricted" title="${node.visibility === 'private' ? 'Private' : 'Shared with specific people'}">🔒</span>`
+      : '';
     a.innerHTML = `
       <span class="tree-twisty"></span>
       <span class="tree-icon">${icon}</span>
       <span class="tree-name">${escapeHtml(node.name)}</span>
+      ${lock}
       ${node.archived ? '<span class="badge badge-archived">archived</span>' : ''}
       ${badge}
     `;
