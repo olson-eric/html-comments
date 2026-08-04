@@ -161,10 +161,16 @@ function renderNode(node, depth) {
         : '';
     const icon = { html: '📄', markdown: '📝', image: '🖼️' }[node.kind] || '📄';
     if (node.archived) a.classList.add('archived');
+    // The server only returns docs this viewer can read; the lock just marks
+    // ones that are restricted (private to you, or shared with a list).
+    const lock = node.visibility
+      ? `<span class="badge badge-restricted" title="${node.visibility === 'private' ? 'Private' : 'Shared with specific people'}">🔒</span>`
+      : '';
     a.innerHTML = `
       <span class="tree-twisty"></span>
       <span class="tree-icon">${icon}</span>
       <span class="tree-name">${escapeHtml(node.name)}</span>
+      ${lock}
       ${node.archived ? '<span class="badge badge-archived">archived</span>' : ''}
       ${badge}
     `;

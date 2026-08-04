@@ -23,13 +23,18 @@ authorInput.addEventListener('input', () => localStorage.setItem('hc:author', au
 
 // When the deployment trusts an auth proxy's identity header, the server
 // stamps authorship itself; show the signed-in name and lock the field.
+// Sharing controls only make sense with a verified identity, so the Share
+// button appears alongside.
+let signedInUser = null;
 fetch('api/root')
   .then((r) => r.json())
   .then(({ identity }) => {
     if (identity && identity.user) {
+      signedInUser = identity.user;
       authorInput.value = identity.user;
       authorInput.disabled = true;
       authorInput.title = 'Signed in through your organization';
+      initShare();
     }
   })
   .catch(() => {});
@@ -126,6 +131,97 @@ async function copyLink(name) {
     copyLinkBtn.classList.remove('copied');
     copyLinkBtn.removeAttribute('aria-label');
   }, 1800);
+}
+
+// ----- Sharing -----
+const shareWrap = document.getElementById('share-wrap');
+const shareBtn = document.getElementById('share-btn');
+const sharePopover = document.getElementById('share-popover');
+const shareEmails = document.getElementById('share-emails');
+const shareSave = document.getElementById('share-save');
+const shareOwnerHint = document.getElementById('share-owner-hint');
+let sharePerms = null;
+
+function initShare() {
+  shareWrap.hidden = false;
+  shareBtn.addEventListener('click', () => {
+    if (!sharePopover.hidden) return closeSharePopover();
+    openSharePopover();
+  });
+  for (const radio of sharePopover.querySelectorAll('input[name="share-vis"]')) {
+    radio.addEventListener('change', () => {
+      shareEmails.hidden = shareVisibility() !== 'shared';
+    });
+  }
+  shareSave.addEventListener('click', saveShare);
+  document.addEventListener('click', (e) => {
+    if (sharePopover.hidden) return;
+    if (shareWrap.contains(e.target)) return;
+    closeSharePopover();
+  });
+  refreshShareState();
+}
+
+async function refreshShareState() {
+  try {
+    const res = await fetch(`api/file/permissions${apiQS}`);
+    if (!res.ok) return;
+    sharePerms = await res.json();
+  } catch {
+    return;
+  }
+  const v = sharePerms.visibility;
+  shareBtn.textContent = v === 'private' ? '🔒 Private' : v === 'shared' ? '👥 Shared' : 'Share';
+  shareBtn.classList.toggle('restricted', v !== 'everyone');
+}
+
+function shareVisibility() {
+  const checked = sharePopover.querySelector('input[name="share-vis"]:checked');
+  return checked ? checked.value : 'everyone';
+}
+
+function openSharePopover() {
+  const v = (sharePerms && sharePerms.visibility) || 'everyone';
+  const radio = sharePopover.querySelector(`input[name="share-vis"][value="${v}"]`);
+  if (radio) radio.checked = true;
+  shareEmails.value = ((sharePerms && sharePerms.sharedWith) || []).join('\n');
+  shareEmails.hidden = v !== 'shared';
+  // Docs claimed by someone else are read-only here; the server enforces
+  // owner-only writes regardless.
+  const owner = sharePerms && sharePerms.owner;
+  const notOwner = !!owner && owner.toLowerCase() !== String(signedInUser || '').toLowerCase();
+  for (const el of sharePopover.querySelectorAll('input, textarea, #share-save')) el.disabled = notOwner;
+  shareOwnerHint.hidden = !notOwner;
+  if (notOwner) shareOwnerHint.textContent = `Only the owner (${owner}) can change sharing.`;
+  sharePopover.hidden = false;
+  shareBtn.setAttribute('aria-expanded', 'true');
+}
+
+function closeSharePopover() {
+  sharePopover.hidden = true;
+  shareBtn.setAttribute('aria-expanded', 'false');
+}
+
+async function saveShare() {
+  const visibility = shareVisibility();
+  const body = { visibility };
+  if (visibility === 'shared') {
+    body.sharedWith = shareEmails.value.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+  }
+  const res = await fetch(`api/file/permissions${apiQS}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    flash(err.error || 'Failed to update sharing');
+    return;
+  }
+  sharePerms = await res.json();
+  closeSharePopover();
+  refreshShareState();
+  flash('Sharing updated');
 }
 
 applyRecipientName();
