@@ -8,7 +8,7 @@ const DEFAULT_HEADERS = process.env.HTML_COMMENTS_TOKEN
   ? { Authorization: `Bearer ${process.env.HTML_COMMENTS_TOKEN}` }
   : {};
 const DEFAULT_AUTHOR = process.env.HTML_COMMENTS_AUTHOR || 'agent';
-const COMMANDS = new Set(['serve', 'list', 'show', 'poll', 'reply', 'resolve', 'publish', 'updates', 'open', 'help']);
+const COMMANDS = new Set(['serve', 'list', 'show', 'queue', 'poll', 'ack', 'reply', 'resolve', 'publish', 'updates', 'open', 'help']);
 
 function output(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
@@ -72,6 +72,16 @@ function encodePath(value) {
   return value.split('/').map(encodeURIComponent).join('/');
 }
 
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    let input = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => { input += chunk; });
+    process.stdin.on('end', () => resolve(input));
+    process.stdin.on('error', reject);
+  });
+}
+
 function help() {
   output({
     description: 'Review HTML, markdown, and image artifacts with human comments and an agent-friendly workflow.',
@@ -80,9 +90,11 @@ function help() {
       'html-comments': 'Show documents needing attention and queued feedback',
       'html-comments serve [dir]': 'Start the review server',
       'html-comments list [--status open|resolved|uncommented|all]': 'List documents',
-      'html-comments show <doc>': 'Show a document and its comment threads',
-      'html-comments poll [--timeout seconds]': 'Wait for a feedback batch',
-      'html-comments reply <doc> <comment-id> <text> [--resolve]': 'Reply, optionally resolving atomically',
+      'html-comments show <doc> [--content]': 'Show a document and its threads, optionally including rendered HTML',
+      'html-comments queue': 'Non-destructively list queued feedback',
+      'html-comments poll [--path doc] [--timeout seconds] [--lease seconds]': 'Lease a feedback batch',
+      'html-comments ack <job-id> <lease-id>': 'Acknowledge and remove a completed feedback batch',
+      'html-comments reply <doc> <comment-id> <text> [--resolve] [--stdin]': 'Reply, optionally resolving atomically',
       'html-comments resolve <doc> <comment-id>': 'Resolve a comment thread',
       'html-comments publish <file> [--to path]': 'Publish or update an artifact',
       'html-comments updates [--since ISO-time]': 'Read activity',
@@ -113,7 +125,7 @@ async function main() {
   if (!command) {
     const home = await request(server, '/api/agent/home');
     home.next_step = home.counts.queuedReviews
-      ? 'Run `html-comments poll` to receive queued feedback.'
+      ? 'Run `html-comments queue` to inspect queued feedback or `html-comments poll` to lease it.'
       : home.counts.needingReview
         ? 'Run `html-comments show <doc>` to inspect open comments.'
         : 'No documents need attention. Run `html-comments list --status all` to browse everything.';
@@ -146,38 +158,72 @@ async function main() {
   }
 
   if (command === 'show') {
+    const includeContent = takeFlag(args, '--content');
     const doc = args.shift();
-    if (!doc || args.length) throw new Error('usage: html-comments show <doc>');
+    if (!doc || args.length) throw new Error('usage: html-comments show <doc> [--content]');
     const result = await request(server, '/api/file', {}, { path: doc });
+    if (includeContent) result.content = await request(server, '/api/file/html', {}, { path: doc });
     result.next_step = result.comments.some((comment) => !comment.resolved)
       ? 'After applying feedback, run `html-comments reply <doc> <comment-id> "what changed" --resolve`.'
       : 'No open comments remain.';
     return output(result);
   }
 
+  if (command === 'queue') {
+    if (args.length) throw new Error(`unknown argument: ${args[0]}`);
+    const result = await request(server, '/api/agent/queue');
+    result.next_step = result.count
+      ? 'Run `html-comments poll` to lease the oldest queued review.'
+      : 'No feedback is queued.';
+    return output(result);
+  }
+
   if (command === 'poll') {
+    const doc = takeOption(args, '--path', null);
     const timeoutValue = takeOption(args, '--timeout', null);
+    const leaseValue = takeOption(args, '--lease', '300');
     if (args.length) throw new Error(`unknown argument: ${args[0]}`);
     const deadline = timeoutValue === null ? null : Date.now() + Math.max(1, Number(timeoutValue)) * 1000;
     if (timeoutValue !== null && !Number.isFinite(Number(timeoutValue))) throw new Error('--timeout must be a number');
+    if (!Number.isFinite(Number(leaseValue)) || Number(leaseValue) < 1) throw new Error('--lease must be a positive number');
     if (process.stderr.isTTY) process.stderr.write('Waiting for review feedback…\n');
     while (deadline === null || Date.now() < deadline) {
       const remaining = deadline === null ? 30 : Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
-      const result = await request(server, '/api/agent/poll', {}, { timeout: Math.min(30, remaining) });
+      const result = await request(server, '/api/agent/poll', {}, {
+        path: doc,
+        timeout: Math.min(30, remaining),
+        lease: leaseValue,
+      });
       if (result) {
         // The structured job is sufficient; omit the server's duplicate prose prompt.
-        return output({ review: result.job, next_step: 'Apply each comment, then reply and resolve its thread. Poll again when ready.' });
+        return output({
+          review: result.job,
+          next_step: 'Apply each comment, then reply and resolve its thread. Finally run `html-comments ack <job-id> <lease-id>`.',
+        });
       }
     }
     return output({ status: 'timeout', count: 0, next_step: 'Run `html-comments poll` to keep waiting.' });
   }
 
+  if (command === 'ack') {
+    const [jobId, leaseId, ...rest] = args;
+    if (!jobId || !leaseId || rest.length) throw new Error('usage: html-comments ack <job-id> <lease-id>');
+    const result = await request(server, `/api/agent/jobs/${encodeURIComponent(jobId)}/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leaseId }),
+    });
+    return output({ ...result, next_step: 'Review acknowledged. Poll again when ready.' });
+  }
+
   if (command === 'reply') {
     const resolve = takeFlag(args, '--resolve');
+    const stdin = takeFlag(args, '--stdin');
     const doc = args.shift();
     const commentId = args.shift();
-    const text = args.join(' ');
-    if (!doc || !commentId || !text) throw new Error('usage: html-comments reply <doc> <comment-id> <text> [--resolve]');
+    if (stdin && args.length) throw new Error('reply text cannot be supplied with --stdin');
+    const text = stdin ? await readStdin() : args.join(' ');
+    if (!doc || !commentId || !text.trim()) throw new Error('usage: html-comments reply <doc> <comment-id> <text> [--resolve] [--stdin]');
     const route = `/api/file/comments/${encodeURIComponent(commentId)}/${resolve ? 'complete' : 'replies'}`;
     const result = await request(server, route, {
       method: 'POST',
