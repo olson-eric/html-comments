@@ -4,7 +4,7 @@
   "description": "Render a directory of HTML, markdown, and image files with Google-Docs-style inline comments. Comes with a JSON API for agents to read, reply, and resolve.",
   "main": "server.js",
   "bin": {
-    "html-comments": "server.js"
+    "html-comments": "cli.js"
   },
   "scripts": {
     "start": "node server.js",
@@ -12,6 +12,7 @@
     "test": "node --test"
   },
   "files": [
+    "cli.js",
     "server.js",
     "public/",
     "README.md",
