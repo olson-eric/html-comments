@@ -56,6 +56,7 @@ button {
   cursor: pointer;
 }
 button:hover { filter: brightness(1.05); }
+button:disabled { cursor: not-allowed; opacity: 0.55; filter: none; }
 button.secondary {
   background: var(--surface);
   color: var(--text);
@@ -581,6 +582,17 @@ button.crumb-dir:hover { background: var(--row-hover); }
   background: var(--surface);
   font: inherit;
 }
+.agent-dispatch {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+.agent-dispatch button { white-space: nowrap; }
+.agent-dispatch .muted { font-size: 0.78rem; line-height: 1.25; }
 .comments-list {
   flex: 1;
   overflow-y: auto;

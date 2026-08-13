@@ -98,7 +98,7 @@ Files are identified by their extension-free doc path relative to the served roo
 | `GET` | `/health` | Liveness check, returns `{ "ok": true }` (also served un-prefixed at the root when `BASE_PATH` is set) |
 | `GET` | `/api/root` | Absolute path of the served root + configured `basePath` |
 | `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`image`) and comment counts |
-| `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Kinds: `created`, `replied`, `resolved`, `unresolved`, `deleted` (comment events) and `uploaded`, `removed`, `moved`, `archived`, `unarchived`, `shared` (file events). Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
+| `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Kinds: `created`, `replied`, `resolved`, `unresolved`, `deleted`, `queued` (review events) and `uploaded`, `removed`, `moved`, `archived`, `unarchived`, `shared` (file events). Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
 | `GET` | `/api/file?path=...` | File metadata (incl. `kind`) + all comments |
 | `GET` | `/api/file/html?path=...` | The raw HTML; for markdown, the *rendered* HTML (the text anchors index into) |
 | `GET` | `/raw/<file>` | The file as-is, by real filename (use this for markdown source / image bytes / sibling assets) |
@@ -122,6 +122,36 @@ Documents restricted via sharing return 404 on every route (tree, file, comments
 | `POST` | `/api/file/comments/:cid/replies?path=...` | `{ text, author? }` | Reply on a thread |
 | `PATCH` | `/api/file/comments/:cid?path=...` | `{ resolved?: boolean, text?: string }` | Resolve / edit |
 | `DELETE` | `/api/file/comments/:cid?path=...` | — | Delete |
+
+### Push feedback to a waiting agent
+
+An agent can long-poll for an explicit review batch instead of repeatedly
+checking the file tree. Leave this request running while reviewing:
+
+```bash
+while true; do
+  feedback=$(curl -s "http://localhost:4747/api/agent/poll?timeout=30")
+  if [ -n "$feedback" ]; then printf '%s\n' "$feedback"; break; fi
+done
+```
+
+Add as many comments as needed, then click **Send to agent** in the viewer. The
+request returns one JSON object containing the document, a snapshot of every
+open comment thread, and a ready-to-use `prompt`. If no review is sent within
+the timeout it returns `204 No Content`; the loop reconnects and keeps waiting.
+Queued batches are persisted, so sending before an agent starts polling is
+safe.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/agent/poll?timeout=25` | Wait up to 30 seconds for and consume the oldest accessible review batch. |
+| `POST` | `/api/agent/queue?path=...` | Bundle all open comments on a document and wake a waiting agent. This is what the viewer button calls. |
+| `GET` | `/api/agent/status?path=...` | Report queued batches and whether an agent is currently waiting. |
+
+On identity-enabled deployments, the poll request must authenticate through
+the same proxy as the reviewer. A batch is addressed to the identity that
+clicked **Send to agent**, and document permissions are checked again when it
+is delivered.
 
 ### Publishing files (opt-in)
 

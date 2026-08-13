@@ -455,6 +455,75 @@ function readEvents(since) {
   return events;
 }
 
+// Reviewers explicitly bundle the current open threads before an agent sees
+// them. Jobs are durable so clicking "Send to agent" is safe even when no
+// agent is polling yet; a waiting poll receives the oldest visible job.
+const AGENT_QUEUE_FILE = path.join(COMMENTS_DIR, 'agent-queue.json');
+const AGENT_QUEUE_MAX = 500;
+const agentWaiters = new Set();
+
+function readAgentQueue() {
+  try {
+    const data = JSON.parse(fs.readFileSync(AGENT_QUEUE_FILE, 'utf8'));
+    return Array.isArray(data.jobs) ? data.jobs : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeAgentQueue(jobs) {
+  writeJsonAtomic(AGENT_QUEUE_FILE, { jobs: jobs.slice(-AGENT_QUEUE_MAX) });
+}
+
+function agentCanReceive(job, identity) {
+  if (job.requestedBy && normIdentity(job.requestedBy) !== normIdentity(identity)) return false;
+  return canReadRel(job.file, identity);
+}
+
+function takeAgentJob(identity) {
+  const jobs = readAgentQueue();
+  const index = jobs.findIndex((job) => agentCanReceive(job, identity));
+  if (index === -1) return null;
+  const [job] = jobs.splice(index, 1);
+  writeAgentQueue(jobs);
+  return job;
+}
+
+function agentPrompt(job) {
+  return [
+    `Review feedback was sent for ${job.path} (${job.file}).`,
+    'Address each comment below. After making changes, reply to each thread and resolve it through the html-comments API.',
+    'When ready for another review round, poll /api/agent/poll again.',
+    '',
+    JSON.stringify(job.comments, null, 2),
+  ].join('\n');
+}
+
+function deliverAgentJob(waiter) {
+  const job = takeAgentJob(waiter.identity);
+  if (!job) return false;
+  clearTimeout(waiter.timer);
+  agentWaiters.delete(waiter);
+  waiter.res.json({ job, prompt: agentPrompt(job) });
+  return true;
+}
+
+function wakeAgentWaiters() {
+  for (const waiter of [...agentWaiters]) deliverAgentJob(waiter);
+}
+
+function migrateAgentJobs(oldRel, newRel) {
+  const jobs = readAgentQueue();
+  let changed = false;
+  for (const job of jobs) {
+    if (job.file !== oldRel) continue;
+    job.file = newRel;
+    job.path = docPathFor(newRel);
+    changed = true;
+  }
+  if (changed) writeAgentQueue(jobs);
+}
+
 function extractTitle(html) {
   const m = /<title[^>]*>([^<]+)<\/title>/i.exec(html);
   return m ? m[1].trim() : null;
@@ -581,6 +650,62 @@ router.get('/api/updates', (req, res) => {
   const identity = identityFor(req);
   const events = readEvents(since).filter((e) => !e.file || canReadRel(e.file, identity, perms));
   res.json({ now: new Date().toISOString(), since, events });
+});
+
+// Long-poll endpoint for an agent. The request returns immediately when a
+// queued review exists, otherwise waits until a reviewer sends one. A 204
+// timeout is intentionally easy for agents to retry.
+router.get('/api/agent/poll', (req, res) => {
+  const identity = identityFor(req);
+  const immediate = takeAgentJob(identity);
+  if (immediate) return res.json({ job: immediate, prompt: agentPrompt(immediate) });
+
+  const requested = Number(req.query.timeout);
+  const timeoutSeconds = Number.isFinite(requested) ? Math.max(1, Math.min(30, requested)) : 25;
+  const waiter = { res, identity, timer: null };
+  waiter.timer = setTimeout(() => {
+    agentWaiters.delete(waiter);
+    if (!res.headersSent) res.status(204).end();
+  }, timeoutSeconds * 1000);
+  agentWaiters.add(waiter);
+  res.on('close', () => {
+    clearTimeout(waiter.timer);
+    agentWaiters.delete(waiter);
+  });
+});
+
+router.get('/api/agent/status', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
+  const identity = identityFor(req);
+  const queued = readAgentQueue().filter((job) => job.file === f.rel && agentCanReceive(job, identity)).length;
+  const waiting = [...agentWaiters].some((waiter) => normIdentity(waiter.identity) === normIdentity(identity));
+  res.json({ path: f.doc, file: f.rel, queued, agentWaiting: waiting });
+});
+
+// Snapshot all currently open threads into one durable job. Comments can keep
+// arriving afterward; the reviewer decides when to send the next batch.
+router.post('/api/agent/queue', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
+  const comments = readComments(f.rel).comments.filter((comment) => !comment.resolved);
+  if (!comments.length) return res.status(400).json({ error: 'no open comments to send' });
+  const job = {
+    id: newId(),
+    createdAt: new Date().toISOString(),
+    requestedBy: identityFor(req) || undefined,
+    path: f.doc,
+    file: f.rel,
+    comments,
+  };
+  const jobs = readAgentQueue();
+  jobs.push(job);
+  writeAgentQueue(jobs);
+  recordEvent('queued', f, { author: job.requestedBy, commentCount: comments.length, jobId: job.id });
+  wakeAgentWaiters();
+  res.json({ id: job.id, path: job.path, commentCount: comments.length });
 });
 
 router.get('/api/file', (req, res) => {
@@ -894,6 +1019,7 @@ function migrateFileMeta(oldRel, newRel, archived, perms) {
     // owner (so it can't be re-claimed by someone else), same as a delete.
     perms[newRel] = perms[oldRel];
   }
+  migrateAgentJobs(oldRel, newRel);
 }
 
 function listSupportedFiles(absDir, relDir) {

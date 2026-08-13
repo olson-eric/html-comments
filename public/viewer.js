@@ -17,6 +17,8 @@ const filterSelect = document.getElementById('filter');
 const popover = document.getElementById('add-comment-popover');
 const composerTemplate = document.getElementById('composer-template');
 const authorInput = document.getElementById('author');
+const sendToAgentBtn = document.getElementById('send-to-agent');
+const agentStatus = document.getElementById('agent-status');
 
 authorInput.value = localStorage.getItem('hc:author') || '';
 authorInput.addEventListener('input', () => localStorage.setItem('hc:author', authorInput.value));
@@ -257,6 +259,7 @@ function legacyCopy(text) {
 }
 
 filterSelect.addEventListener('change', renderSidebar);
+sendToAgentBtn.addEventListener('click', sendToAgent);
 
 bootstrap();
 
@@ -292,6 +295,8 @@ async function bootstrap() {
 
   setInterval(pollComments, POLL_COMMENTS_MS);
   setInterval(pollDocument, POLL_DOC_MS);
+  setInterval(pollAgentStatus, POLL_COMMENTS_MS);
+  pollAgentStatus();
 }
 
 // Breadcrumb: each folder segment of the current file's path is clickable and
@@ -500,6 +505,47 @@ async function pollComments() {
       renderHighlights();
       renderSidebar();
     }
+  } catch {}
+}
+
+async function sendToAgent() {
+  sendToAgentBtn.disabled = true;
+  agentStatus.textContent = 'Sending…';
+  try {
+    const res = await fetch(`api/agent/queue${apiQS}`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      agentStatus.textContent = data.error || 'Failed to send';
+      updateAgentDispatch();
+      return;
+    }
+    agentStatus.textContent = `Sent ${data.commentCount} comment${data.commentCount === 1 ? '' : 's'}`;
+    flash('Feedback sent to agent');
+  } catch {
+    agentStatus.textContent = 'Failed to send';
+  } finally {
+    sendToAgentBtn.disabled = state.comments.every((comment) => comment.resolved);
+  }
+}
+
+function updateAgentDispatch() {
+  const count = state.comments.filter((comment) => !comment.resolved).length;
+  sendToAgentBtn.disabled = count === 0;
+  const sent = agentStatus.textContent.startsWith('Sent') || agentStatus.textContent.startsWith('Queued');
+  sendToAgentBtn.textContent = count ? (sent ? 'Send again' : `Send ${count} to agent`) : 'Send to agent';
+  if (!count) agentStatus.textContent = 'No open comments';
+  else if (agentStatus.textContent === 'No open comments') agentStatus.textContent = 'Bundles all open comments';
+}
+
+async function pollAgentStatus() {
+  try {
+    const res = await fetch(`api/agent/status${apiQS}`);
+    if (!res.ok) return;
+    const status = await res.json();
+    if (status.queued) agentStatus.textContent = `Queued: ${status.queued} batch${status.queued === 1 ? '' : 'es'}`;
+    else if (status.agentWaiting) agentStatus.textContent = 'Agent waiting';
+    else if (!agentStatus.textContent.startsWith('Sent')) agentStatus.textContent = 'No agent waiting';
+    updateAgentDispatch();
   } catch {}
 }
 
@@ -1026,6 +1072,7 @@ function wrapTextNodeRange(node, start, end, comment) {
 }
 
 function renderSidebar() {
+  updateAgentDispatch();
   commentsList.innerHTML = '';
   const filter = filterSelect.value;
   let comments = [...state.comments];
