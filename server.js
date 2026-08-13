@@ -641,6 +641,62 @@ router.get('/api/tree', (req, res) => {
   res.json(buildTree(ROOT, '', readArchived(), readPerms(), identityFor(req)));
 });
 
+function flattenDocuments(node, documents = []) {
+  for (const child of node.children || []) {
+    if (child.type === 'dir') flattenDocuments(child, documents);
+    else documents.push(child);
+  }
+  return documents;
+}
+
+function visibleDocuments(identity) {
+  return flattenDocuments(buildTree(ROOT, '', readArchived(), readPerms(), identity));
+}
+
+function filterDocuments(documents, status) {
+  if (status === 'open') return documents.filter((doc) => doc.openCount > 0);
+  if (status === 'resolved') return documents.filter((doc) => doc.commentCount > 0 && doc.openCount === 0);
+  if (status === 'uncommented') return documents.filter((doc) => doc.commentCount === 0);
+  return documents;
+}
+
+// Flat, bounded discovery is easier for agents than recursively walking the
+// UI-oriented tree. Defaults to the review inbox: documents needing action.
+router.get('/api/documents', (req, res) => {
+  const requestedStatus = req.query.status || 'open';
+  if (!['all', 'open', 'resolved', 'uncommented'].includes(requestedStatus)) {
+    return res.status(400).json({ error: 'status must be one of open, resolved, uncommented, all' });
+  }
+  const status = requestedStatus;
+  const requestedLimit = Number(req.query.limit);
+  if (req.query.limit !== undefined && (!Number.isFinite(requestedLimit) || requestedLimit < 1)) {
+    return res.status(400).json({ error: 'limit must be a positive number' });
+  }
+  const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(200, Math.floor(requestedLimit))) : 50;
+  const matching = filterDocuments(visibleDocuments(identityFor(req)), status);
+  res.json({
+    count: matching.length,
+    status,
+    truncated: matching.length > limit,
+    documents: matching.slice(0, limit),
+  });
+});
+
+// One compact call powers the CLI's no-argument dashboard.
+router.get('/api/agent/home', (req, res) => {
+  const identity = identityFor(req);
+  const documents = visibleDocuments(identity);
+  const open = filterDocuments(documents, 'open');
+  const queued = readAgentQueue().filter((job) => agentCanReceive(job, identity)).length;
+  res.json({
+    server: { name: path.basename(ROOT), basePath: BASE_PATH, uploadsEnabled: UPLOADS_ENABLED },
+    identity: identity || null,
+    counts: { documents: documents.length, needingReview: open.length, queuedReviews: queued },
+    documents: open.slice(0, 20),
+    truncated: open.length > 20,
+  });
+});
+
 // Recent activity across all files, oldest first. Poll with the returned
 // `now` as the next `since` to get exactly-once delivery of new events.
 // Events on restricted docs are only shown to identities that can read them.
@@ -828,6 +884,33 @@ router.post('/api/file/comments/:cid/replies', (req, res) => {
   writeComments(f.rel, data);
   recordEvent('replied', f, { commentId: comment.id, author: reply.author });
   res.json(reply);
+});
+
+// The common agent action is one transaction: report what changed and close
+// the thread. Keeping it atomic prevents a successful reply followed by a
+// failed resolve from leaving ambiguous review state.
+router.post('/api/file/comments/:cid/complete', (req, res) => {
+  const f = resolveFile(req.query.path);
+  if (!f) return res.status(404).json({ error: 'not found' });
+  if (!requireReadable(req, res, f.rel)) return;
+  const { text, author } = req.body || {};
+  if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
+  const data = readComments(f.rel);
+  const comment = data.comments.find((candidate) => candidate.id === req.params.cid);
+  if (!comment) return res.status(404).json({ error: 'comment not found' });
+  const reply = {
+    id: newId(),
+    text,
+    author: authorFrom(req, author),
+    createdAt: new Date().toISOString(),
+  };
+  comment.replies.push(reply);
+  const wasResolved = comment.resolved;
+  comment.resolved = true;
+  writeComments(f.rel, data);
+  recordEvent('replied', f, { commentId: comment.id, author: reply.author });
+  if (!wasResolved) recordEvent('resolved', f, { commentId: comment.id, author: reply.author });
+  res.json({ path: f.doc, file: f.rel, reply, comment });
 });
 
 router.patch('/api/file/comments/:cid', (req, res) => {

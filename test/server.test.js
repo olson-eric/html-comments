@@ -126,6 +126,37 @@ test('HTTP routes', async (t) => {
     assert.strictEqual(byFile.file, 'notes.md');
   });
 
+  await t.test('agent discovery is flat, filtered, counted, and bounded', async () => {
+    const inbox = await (await fetch(`${base}/api/documents`)).json();
+    assert.strictEqual(inbox.status, 'open');
+    assert.strictEqual(inbox.count, 1);
+    assert.strictEqual(inbox.documents[0].path, 'notes');
+
+    const home = await (await fetch(`${base}/api/agent/home`)).json();
+    assert.strictEqual(home.counts.needingReview, 1);
+    assert.strictEqual(home.documents[0].openCount, 1);
+
+    const empty = await (await fetch(`${base}/api/documents?status=open&limit=1`)).json();
+    assert.strictEqual(empty.truncated, false);
+    assert.strictEqual((await fetch(`${base}/api/documents?status=bogus`)).status, 400);
+  });
+
+  await t.test('complete atomically replies and resolves a comment', async () => {
+    const comments = await (await fetch(`${base}/api/file/comments?path=notes&status=open`)).json();
+    const completed = await fetch(`${base}/api/file/comments/${comments.comments[0].id}/complete?path=notes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'Applied the requested change', author: 'agent' }),
+    });
+    assert.strictEqual(completed.status, 200);
+    const result = await completed.json();
+    assert.strictEqual(result.comment.resolved, true);
+    assert.strictEqual(result.comment.replies[0].text, 'Applied the requested change');
+
+    const inbox = await (await fetch(`${base}/api/documents`)).json();
+    assert.strictEqual(inbox.count, 0);
+  });
+
   await t.test('uploads are disabled by default: mutations 403 and nothing is written', async () => {
     const put = await fetch(`${base}/api/upload/newdoc.html`, { method: 'PUT', body: '<html>x</html>' });
     assert.strictEqual(put.status, 403);
