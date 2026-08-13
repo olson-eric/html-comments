@@ -102,9 +102,12 @@ command rather than generic help.
 ```bash
 html-comments                                      # live dashboard
 html-comments list --status open
-html-comments show docs/spec
-html-comments poll                                 # waits and reconnects
+html-comments show docs/spec --content
+html-comments queue                                # non-destructive inspection
+html-comments poll --path docs/spec --lease 300    # lease this document
 html-comments reply docs/spec <cid> "Applied" --resolve
+printf 'Applied the requested changes\n' | html-comments reply docs/spec <cid> --stdin --resolve
+html-comments ack <job-id> <lease-id>               # remove completed job
 html-comments publish spec.html --to docs/spec.html
 html-comments updates --since <ISO-time>
 ```
@@ -165,17 +168,22 @@ while true; do
 done
 ```
 
-Add as many comments as needed, then click **Send to agent** in the viewer. The
-request returns one JSON object containing the document, a snapshot of every
-open comment thread, and a ready-to-use `prompt`. If no review is sent within
-the timeout it returns `204 No Content`; the loop reconnects and keeps waiting.
-Queued batches are persisted, so sending before an agent starts polling is
-safe.
+Add as many comments as needed, then click **Send to agent** in the viewer.
+Repeated sends for the same document and recipient update the existing job
+rather than adding duplicates. Poll returns one JSON object containing the
+document, a snapshot of every open comment thread, a lease, and a ready-to-use
+`prompt`. If no review is sent within the timeout it returns `204 No Content`;
+the loop reconnects and keeps waiting. Queued batches are persisted. Polling
+leases a batch for five minutes by default instead of deleting it, so a crashed
+agent cannot lose the work. After completing it, acknowledge the job with its
+returned job and lease IDs. An expired lease makes the same job pollable again.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/agent/poll?timeout=25` | Wait up to 30 seconds for and consume the oldest accessible review batch. |
-| `POST` | `/api/agent/queue?path=...` | Bundle all open comments on a document and wake a waiting agent. This is what the viewer button calls. |
+| `GET` | `/api/agent/queue` | Non-destructively list accessible queued and leased review batches. |
+| `GET` | `/api/agent/poll?path=docs/spec&timeout=25&lease=300` | Wait up to 30 seconds for and lease a review batch. With `path`, only that document is eligible; otherwise the oldest accessible batch is leased. Leases may be 1–3600 seconds. |
+| `POST` | `/api/agent/queue?path=...` | Bundle all open comments on a document and wake a waiting agent. Repeated sends for the same document/recipient are coalesced. |
+| `POST` | `/api/agent/jobs/:jobId/ack` | With `{ leaseId }`, acknowledge and remove a completed leased batch. |
 | `GET` | `/api/agent/status?path=...` | Report queued batches and whether an agent is currently waiting. |
 
 On identity-enabled deployments, the poll request must authenticate through

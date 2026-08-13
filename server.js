@@ -457,7 +457,8 @@ function readEvents(since) {
 
 // Reviewers explicitly bundle the current open threads before an agent sees
 // them. Jobs are durable so clicking "Send to agent" is safe even when no
-// agent is polling yet; a waiting poll receives the oldest visible job.
+// agent is polling yet. Polling leases rather than removes a job, so a crashed
+// agent does not lose it; only an explicit ack removes it.
 const AGENT_QUEUE_FILE = path.join(COMMENTS_DIR, 'agent-queue.json');
 const AGENT_QUEUE_MAX = 500;
 const agentWaiters = new Set();
@@ -480,27 +481,43 @@ function agentCanReceive(job, identity) {
   return canReadRel(job.file, identity);
 }
 
-function takeAgentJob(identity) {
+function leaseExpired(job, now = Date.now()) {
+  return !job.lease || Date.parse(job.lease.expiresAt) <= now;
+}
+
+function leaseAgentJob(identity, leaseSeconds, file = null) {
   const jobs = readAgentQueue();
-  const index = jobs.findIndex((job) => agentCanReceive(job, identity));
+  const index = jobs.findIndex(
+    (job) => (!file || job.file === file) && agentCanReceive(job, identity) && leaseExpired(job)
+  );
   if (index === -1) return null;
-  const [job] = jobs.splice(index, 1);
+  const job = jobs[index];
+  job.lease = {
+    id: newId(),
+    expiresAt: new Date(Date.now() + leaseSeconds * 1000).toISOString(),
+  };
   writeAgentQueue(jobs);
   return job;
+}
+
+function requestedLeaseSeconds(value) {
+  const requested = Number(value);
+  return Number.isFinite(requested) ? Math.max(1, Math.min(3600, requested)) : 300;
 }
 
 function agentPrompt(job) {
   return [
     `Review feedback was sent for ${job.path} (${job.file}).`,
     'Address each comment below. After making changes, reply to each thread and resolve it through the html-comments API.',
-    'When ready for another review round, poll /api/agent/poll again.',
+    `When finished, acknowledge this job with POST /api/agent/jobs/${job.id}/ack and { "leaseId": "${job.lease.id}" }.`,
+    'Then poll /api/agent/poll again when ready for another review round.',
     '',
     JSON.stringify(job.comments, null, 2),
   ].join('\n');
 }
 
 function deliverAgentJob(waiter) {
-  const job = takeAgentJob(waiter.identity);
+  const job = leaseAgentJob(waiter.identity, waiter.leaseSeconds, waiter.file);
   if (!job) return false;
   clearTimeout(waiter.timer);
   agentWaiters.delete(waiter);
@@ -708,17 +725,26 @@ router.get('/api/updates', (req, res) => {
   res.json({ now: new Date().toISOString(), since, events });
 });
 
-// Long-poll endpoint for an agent. The request returns immediately when a
-// queued review exists, otherwise waits until a reviewer sends one. A 204
-// timeout is intentionally easy for agents to retry.
+// Long-poll endpoint for an agent. The request returns immediately when an
+// unleased review exists, otherwise waits until a reviewer sends one. A 204
+// timeout is intentionally easy for agents to retry. The returned lease must
+// be acknowledged; if it expires first, the job becomes available again.
 router.get('/api/agent/poll', (req, res) => {
   const identity = identityFor(req);
-  const immediate = takeAgentJob(identity);
+  let file = null;
+  if (req.query.path !== undefined) {
+    const f = resolveFile(req.query.path);
+    if (!f) return res.status(404).json({ error: 'not found' });
+    if (!requireReadable(req, res, f.rel)) return;
+    file = f.rel;
+  }
+  const leaseSeconds = requestedLeaseSeconds(req.query.lease);
+  const immediate = leaseAgentJob(identity, leaseSeconds, file);
   if (immediate) return res.json({ job: immediate, prompt: agentPrompt(immediate) });
 
   const requested = Number(req.query.timeout);
   const timeoutSeconds = Number.isFinite(requested) ? Math.max(1, Math.min(30, requested)) : 25;
-  const waiter = { res, identity, timer: null };
+  const waiter = { res, identity, file, leaseSeconds, timer: null };
   waiter.timer = setTimeout(() => {
     agentWaiters.delete(waiter);
     if (!res.headersSent) res.status(204).end();
@@ -728,6 +754,35 @@ router.get('/api/agent/poll', (req, res) => {
     clearTimeout(waiter.timer);
     agentWaiters.delete(waiter);
   });
+});
+
+// Non-destructive queue inspection. Comment snapshots are included so an
+// agent can plan work without acquiring a lease.
+router.get('/api/agent/queue', (req, res) => {
+  const identity = identityFor(req);
+  const jobs = readAgentQueue()
+    .filter((job) => agentCanReceive(job, identity))
+    .map((job) => ({
+      ...job,
+      lease: job.lease ? { expiresAt: job.lease.expiresAt } : undefined,
+      status: leaseExpired(job) ? 'queued' : 'leased',
+    }));
+  res.json({ count: jobs.length, jobs });
+});
+
+router.post('/api/agent/jobs/:jobId/ack', (req, res) => {
+  const identity = identityFor(req);
+  const leaseId = typeof req.body?.leaseId === 'string' ? req.body.leaseId : '';
+  if (!leaseId) return res.status(400).json({ error: 'leaseId is required' });
+  const jobs = readAgentQueue();
+  const index = jobs.findIndex((job) => job.id === req.params.jobId && agentCanReceive(job, identity));
+  if (index === -1) return res.status(404).json({ error: 'job not found' });
+  const job = jobs[index];
+  if (!job.lease || job.lease.id !== leaseId) return res.status(409).json({ error: 'lease does not match' });
+  if (leaseExpired(job)) return res.status(409).json({ error: 'lease expired; poll again before acknowledging' });
+  jobs.splice(index, 1);
+  writeAgentQueue(jobs);
+  res.json({ acknowledged: true, id: job.id, path: job.path });
 });
 
 router.get('/api/agent/status', (req, res) => {
@@ -748,15 +803,30 @@ router.post('/api/agent/queue', (req, res) => {
   if (!requireReadable(req, res, f.rel)) return;
   const comments = readComments(f.rel).comments.filter((comment) => !comment.resolved);
   if (!comments.length) return res.status(400).json({ error: 'no open comments to send' });
+  const jobs = readAgentQueue();
+  const requestedBy = identityFor(req) || undefined;
+  const existing = jobs.find(
+    (job) => job.file === f.rel && normIdentity(job.requestedBy) === normIdentity(requestedBy)
+  );
+  if (existing) {
+    if (JSON.stringify(existing.comments) !== JSON.stringify(comments)) {
+      existing.comments = comments;
+      // A changed snapshot supersedes any copy already handed out. Revoking
+      // its lease ensures the stale worker cannot ack away the new feedback.
+      delete existing.lease;
+      writeAgentQueue(jobs);
+      wakeAgentWaiters();
+    }
+    return res.json({ id: existing.id, path: existing.path, commentCount: comments.length, deduplicated: true });
+  }
   const job = {
     id: newId(),
     createdAt: new Date().toISOString(),
-    requestedBy: identityFor(req) || undefined,
+    requestedBy,
     path: f.doc,
     file: f.rel,
     comments,
   };
-  const jobs = readAgentQueue();
   jobs.push(job);
   writeAgentQueue(jobs);
   recordEvent('queued', f, { author: job.requestedBy, commentCount: comments.length, jobId: job.id });
