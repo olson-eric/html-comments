@@ -129,6 +129,18 @@ test('sharing permissions', async (t) => {
     assert.strictEqual((await comment.json()).author, CFO);
   });
 
+  await t.test('review batches are delivered only to the identity that queued them', async () => {
+    const queued = await send('POST', '/api/agent/queue?path=ceo/board', CFO);
+    assert.strictEqual(queued.status, 200);
+
+    const ceoPoll = await get('/api/agent/poll?timeout=1', CEO);
+    assert.strictEqual(ceoPoll.status, 204);
+
+    const cfoPoll = await get('/api/agent/poll?timeout=1', CFO);
+    assert.strictEqual(cfoPoll.status, 200);
+    assert.strictEqual((await cfoPoll.json()).job.requestedBy, CFO);
+  });
+
   await t.test('restricted docs are owner-only for file mutations', async () => {
     const overwrite = await fetch(`${base}/api/upload/ceo/board.md`, { method: 'PUT', body: 'x', headers: as(CFO) });
     assert.strictEqual(overwrite.status, 403);
