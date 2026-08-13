@@ -18,6 +18,7 @@ const popover = document.getElementById('add-comment-popover');
 const composerTemplate = document.getElementById('composer-template');
 const authorInput = document.getElementById('author');
 const sendToAgentBtn = document.getElementById('send-to-agent');
+const copyAgentInstructionsBtn = document.getElementById('copy-agent-instructions');
 const agentStatus = document.getElementById('agent-status');
 
 authorInput.value = localStorage.getItem('hc:author') || '';
@@ -260,6 +261,7 @@ function legacyCopy(text) {
 
 filterSelect.addEventListener('change', renderSidebar);
 sendToAgentBtn.addEventListener('click', sendToAgent);
+copyAgentInstructionsBtn.addEventListener('click', copyAgentInstructions);
 
 bootstrap();
 
@@ -526,6 +528,55 @@ async function sendToAgent() {
   } finally {
     sendToAgentBtn.disabled = state.comments.every((comment) => comment.resolved);
   }
+}
+
+async function copyAgentInstructions() {
+  if (!state.meta) return;
+  const server = new URL('.', document.baseURI).toString().replace(/\/$/, '');
+  const quotedServer = shellQuote(server);
+  const quotedPath = shellQuote(state.meta.path);
+  const quotedFile = shellQuote(state.meta.file);
+  const instructions = `Handle feedback for ${state.meta.path} with the html-comments CLI:
+
+export HTML_COMMENTS_URL=${quotedServer}
+# Set HTML_COMMENTS_TOKEN too if the server requires it.
+
+# Claim the review lease and read its comments. Save review.id and review.lease.id.
+html-comments poll --path ${quotedPath} --lease 300
+
+# Apply each comment, then reply and resolve it.
+html-comments reply ${quotedPath} <comment-id> "What changed" --resolve
+
+# If needed, publish the updated artifact.
+html-comments publish <local-file> --to ${quotedFile}
+
+# After every comment is complete, acknowledge the lease.
+html-comments ack <review.id> <review.lease.id>
+
+Do not ack incomplete work. If the lease expires, poll again before acking.`;
+
+  let copied = false;
+  try {
+    await navigator.clipboard.writeText(instructions);
+    copied = true;
+  } catch {
+    copied = legacyCopy(instructions);
+  }
+  if (!copied) {
+    flash('Could not copy agent instructions');
+    return;
+  }
+  copyAgentInstructionsBtn.classList.add('copied');
+  copyAgentInstructionsBtn.setAttribute('aria-label', 'Agent instructions copied');
+  flash('Agent instructions copied');
+  setTimeout(() => {
+    copyAgentInstructionsBtn.classList.remove('copied');
+    copyAgentInstructionsBtn.setAttribute('aria-label', 'Copy agent instructions');
+  }, 1800);
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`;
 }
 
 function updateAgentDispatch() {

@@ -4,6 +4,7 @@
 let lastTreeEtag = null;
 
 let serverInfo = { uploadsEnabled: false, identity: null };
+document.getElementById('agent-server-url').textContent = new URL('.', document.baseURI).toString().replace(/\/$/, '');
 
 async function loadRoot() {
   const res = await fetch('api/root');
