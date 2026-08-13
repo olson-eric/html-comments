@@ -40,15 +40,18 @@
       </section>
 
       <section class="card">
-        <h2>Agent API</h2>
-        <p>Files are identified by their extension-free path relative to the HTML root, passed as <code>?path=</code> (real filenames work too).</p>
-        <pre><code>GET    /api/tree
-GET    /api/file?path=foo/bar
-GET    /api/file/comments?path=foo/bar&amp;status=open
-POST   /api/file/comments?path=foo/bar             { anchor, text, author? }
-POST   /api/file/comments/:cid/replies?path=foo/bar { text, author? }
-PATCH  /api/file/comments/:cid?path=foo/bar         { resolved: true }
-DELETE /api/file/comments/:cid?path=foo/bar</code></pre>
+        <h2>Agent CLI</h2>
+        <p>Use extension-free document paths like <code>foo/bar</code>. Commands return structured JSON with the next action.</p>
+        <pre><code>export HTML_COMMENTS_URL='<span id="agent-server-url">…</span>'
+
+html-comments                              # review inbox
+html-comments list --status open
+html-comments show foo/bar --content
+html-comments poll --path foo/bar --lease 300
+html-comments reply foo/bar &lt;comment-id&gt; "What changed" --resolve
+html-comments ack &lt;review-id&gt; &lt;lease-id&gt;
+html-comments publish artifact.html --to foo/bar.html</code></pre>
+        <p class="muted">Set <code>HTML_COMMENTS_TOKEN</code> too if this server requires a bearer token. Poll claims queued feedback; acknowledge only after every comment is complete.</p>
       </section>
     </main>
 
