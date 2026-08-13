@@ -56,7 +56,7 @@ darkPageToggle.addEventListener('change', () => {
   applyDarkPage();
 });
 
-let state = { meta: null, comments: [], pendingAnchor: null, activeCommentId: null };
+let state = { meta: null, comments: [], deletedComments: [], pendingAnchor: null, activeCommentId: null, reattachCommentId: null };
 
 const POLL_COMMENTS_MS = 5000;
 const POLL_DOC_MS = 15000;
@@ -259,7 +259,10 @@ function legacyCopy(text) {
   }
 }
 
-filterSelect.addEventListener('change', renderSidebar);
+filterSelect.addEventListener('change', async () => {
+  if (filterSelect.value === 'deleted') await loadDeletedComments();
+  renderSidebar();
+});
 sendToAgentBtn.addEventListener('click', sendToAgent);
 copyAgentInstructionsBtn.addEventListener('click', copyAgentInstructions);
 
@@ -847,6 +850,7 @@ function onFrameSelection() {
     return;
   }
   state.pendingAnchor = anchor;
+  document.getElementById('start-comment').textContent = state.reattachCommentId ? '🔗 Re-attach comment' : '💬 Add comment';
   const rect = range.getBoundingClientRect();
   const frameRect = frame.getBoundingClientRect();
   popover.style.top = `${frameRect.top + rect.bottom + window.scrollY + 6}px`;
@@ -854,11 +858,39 @@ function onFrameSelection() {
   popover.hidden = false;
 }
 
-document.getElementById('start-comment').addEventListener('click', () => {
+document.getElementById('start-comment').addEventListener('click', async () => {
   if (!state.pendingAnchor) return;
   popover.hidden = true;
+  if (state.reattachCommentId) {
+    if (await reattachComment(state.reattachCommentId, state.pendingAnchor)) {
+      state.reattachCommentId = null;
+      state.pendingAnchor = null;
+    }
+    return;
+  }
   openComposerForNewComment(state.pendingAnchor);
 });
+
+async function reattachComment(commentId, anchor) {
+  const res = await fetch(`api/file/comments/${commentId}${apiQS}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ anchor }),
+  });
+  if (!res.ok) {
+    flash('Failed to re-attach comment');
+    return false;
+  }
+  const updated = await res.json();
+  const comment = state.comments.find((c) => c.id === commentId);
+  Object.assign(comment, updated);
+  delete comment._anchorOrphaned;
+  renderHighlights();
+  renderSidebar();
+  setActiveComment(commentId, { scrollFrame: true, scrollSidebar: true });
+  flash('Comment re-attached');
+  return true;
+}
 
 function openComposerForNewComment(anchor) {
   const existing = commentsList.querySelector('.composer-host');
@@ -937,12 +969,50 @@ async function setResolved(commentId, resolved) {
 }
 
 async function deleteComment(commentId) {
-  if (!confirm('Delete this comment thread?')) return;
   const res = await fetch(`api/file/comments/${commentId}${apiQS}`, { method: 'DELETE' });
-  if (!res.ok) return;
+  if (!res.ok) {
+    flash('Failed to delete comment');
+    return;
+  }
+  const data = await res.json();
   state.comments = state.comments.filter((c) => c.id !== commentId);
+  state.deletedComments = state.deletedComments.filter((c) => c.id !== commentId);
+  state.deletedComments.push(data.comment);
   renderHighlights();
   renderSidebar();
+  flash('Comment deleted', {
+    label: 'Restore',
+    action: () => restoreComment(commentId),
+  });
+}
+
+async function restoreComment(commentId) {
+  const res = await fetch(`api/file/comments/${commentId}${apiQS}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ deleted: false }),
+  });
+  if (!res.ok) {
+    flash('Failed to restore comment');
+    return;
+  }
+  const comment = await res.json();
+  state.deletedComments = state.deletedComments.filter((c) => c.id !== commentId);
+  state.comments.push(comment);
+  renderHighlights();
+  renderSidebar();
+  setActiveComment(comment.id, { scrollSidebar: true, scrollFrame: true });
+  flash('Comment restored');
+}
+
+async function loadDeletedComments() {
+  try {
+    const res = await fetch(`api/file/comments${apiQS}&status=deleted`);
+    if (!res.ok) throw new Error();
+    state.deletedComments = (await res.json()).comments;
+  } catch {
+    flash('Failed to load deleted comments');
+  }
 }
 
 function serializeRange(range, root) {
@@ -1002,7 +1072,8 @@ function renderHighlights() {
   const resolved = [];
   for (const c of state.comments) {
     if (hideResolved && c.resolved) continue;
-    const r = resolveAnchor(fullText, c.anchor);
+    const r = c.anchor.stale ? null : AnchorResolver.resolveAnchor(fullText, c.anchor);
+    c._anchorOrphaned = !r;
     if (!r) continue;
     resolved.push({ comment: c, startIdx: r.startIdx, length: r.length });
   }
@@ -1010,58 +1081,6 @@ function renderHighlights() {
   for (const r of resolved) {
     applyHighlight(doc.body, r.comment, r.startIdx, r.length);
   }
-}
-
-function resolveAnchor(fullText, anchor) {
-  const { startIdx, length, quote, contextBefore, contextAfter } = anchor;
-
-  if (quote && fullText.substr(startIdx, length) === quote) {
-    return { startIdx, length };
-  }
-
-  if (!quote) {
-    if (startIdx >= 0 && startIdx + length <= fullText.length) {
-      return { startIdx, length };
-    }
-    return null;
-  }
-
-  const occurrences = [];
-  for (let i = fullText.indexOf(quote); i !== -1; i = fullText.indexOf(quote, i + 1)) {
-    occurrences.push(i);
-  }
-  if (!occurrences.length) return null;
-  if (occurrences.length === 1) return { startIdx: occurrences[0], length: quote.length };
-
-  let best = occurrences[0];
-  let bestScore = -Infinity;
-  for (const i of occurrences) {
-    const beforeActual = fullText.slice(Math.max(0, i - 40), i);
-    const afterActual = fullText.slice(i + quote.length, i + quote.length + 40);
-    const beforeScore = suffixMatchLen(beforeActual, contextBefore || '');
-    const afterScore = prefixMatchLen(afterActual, contextAfter || '');
-    const distancePenalty = Math.abs(i - startIdx) * 0.01;
-    const score = beforeScore + afterScore - distancePenalty;
-    if (score > bestScore) {
-      bestScore = score;
-      best = i;
-    }
-  }
-  return { startIdx: best, length: quote.length };
-}
-
-function suffixMatchLen(a, b) {
-  const limit = Math.min(a.length, b.length);
-  let n = 0;
-  while (n < limit && a[a.length - 1 - n] === b[b.length - 1 - n]) n++;
-  return n;
-}
-
-function prefixMatchLen(a, b) {
-  const limit = Math.min(a.length, b.length);
-  let n = 0;
-  while (n < limit && a[n] === b[n]) n++;
-  return n;
 }
 
 function applyHighlight(root, comment, startIdx, length) {
@@ -1115,14 +1134,16 @@ function renderSidebar() {
   updateAgentDispatch();
   commentsList.innerHTML = '';
   const filter = filterSelect.value;
-  let comments = [...state.comments];
+  let comments = filter === 'deleted' ? [...state.deletedComments] : [...state.comments];
   if (filter === 'open') comments = comments.filter((c) => !c.resolved);
   if (filter === 'resolved') comments = comments.filter((c) => c.resolved);
   comments.sort((a, b) => anchorSortKey(a.anchor) - anchorSortKey(b.anchor));
   if (!comments.length) {
     const empty = document.createElement('div');
     empty.className = 'muted empty';
-    empty.textContent = isImageDoc()
+    empty.textContent = filter === 'deleted'
+      ? 'No deleted comments.'
+      : isImageDoc()
       ? 'No comments yet. Drag a box on the image to add one.'
       : 'No comments yet. Select text in the page to add one.';
     commentsList.appendChild(empty);
@@ -1139,7 +1160,9 @@ function renderSidebar() {
 
 function renderThread(comment) {
   const wrap = document.createElement('div');
-  wrap.className = 'thread' + (comment.resolved ? ' resolved' : '');
+  const deleted = !!comment.deletedAt;
+  const orphaned = !isRegionAnchor(comment.anchor) && (comment.anchor.stale || comment._anchorOrphaned);
+  wrap.className = 'thread' + (comment.resolved ? ' resolved' : '') + (orphaned ? ' orphaned' : '') + (deleted ? ' deleted' : '');
   wrap.dataset.threadId = comment.id;
   wrap.addEventListener('click', (e) => {
     if (e.target.closest('button, textarea, input')) return;
@@ -1151,13 +1174,20 @@ function renderThread(comment) {
   const header = document.createElement('div');
   header.className = 'thread-header';
   header.innerHTML = `
-    <div class="thread-quote">${quoteHtml}</div>
+    <div class="thread-quote">${quoteHtml}${orphaned ? '<span class="orphan-badge">text changed</span>' : ''}${deleted ? '<span class="deleted-badge">deleted</span>' : ''}</div>
     <div class="thread-meta">
       <strong>${escapeHtml(comment.author)}</strong>
       <span>${formatDate(comment.createdAt)}</span>
     </div>
   `;
   wrap.appendChild(header);
+
+  if (orphaned) {
+    const notice = document.createElement('div');
+    notice.className = 'orphan-notice';
+    notice.textContent = 'The selected text is no longer in this version of the document, so there is no highlight to show.';
+    wrap.appendChild(notice);
+  }
 
   const body = document.createElement('div');
   body.className = 'thread-body markdown-body';
@@ -1177,6 +1207,15 @@ function renderThread(comment) {
 
   const actions = document.createElement('div');
   actions.className = 'thread-actions';
+  if (deleted) {
+    const restoreBtn = document.createElement('button');
+    restoreBtn.className = 'secondary';
+    restoreBtn.textContent = 'Restore';
+    restoreBtn.addEventListener('click', () => restoreComment(comment.id));
+    actions.appendChild(restoreBtn);
+    wrap.appendChild(actions);
+    return wrap;
+  }
   const replyBtn = document.createElement('button');
   replyBtn.className = 'secondary';
   replyBtn.textContent = 'Reply';
@@ -1191,6 +1230,19 @@ function renderThread(comment) {
   delBtn.addEventListener('click', () => deleteComment(comment.id));
   actions.appendChild(replyBtn);
   actions.appendChild(resolveBtn);
+  if (orphaned) {
+    const reattachBtn = document.createElement('button');
+    reattachBtn.className = 'secondary';
+    reattachBtn.textContent = 'Re-attach';
+    reattachBtn.title = 'Select replacement text in the document';
+    reattachBtn.addEventListener('click', () => {
+      state.reattachCommentId = comment.id;
+      state.pendingAnchor = null;
+      flash('Select replacement text in the document, then click Re-attach comment.');
+      frame.focus();
+    });
+    actions.appendChild(reattachBtn);
+  }
   actions.appendChild(delBtn);
   wrap.appendChild(actions);
   return wrap;
@@ -1308,7 +1360,7 @@ function formatDate(iso) {
 }
 
 let flashTimer;
-function flash(msg) {
+function flash(msg, option) {
   let el = document.getElementById('flash');
   if (!el) {
     el = document.createElement('div');
@@ -1316,8 +1368,19 @@ function flash(msg) {
     el.className = 'flash';
     document.body.appendChild(el);
   }
-  el.textContent = msg;
+  el.replaceChildren(document.createTextNode(msg));
+  el.classList.toggle('has-action', !!option);
+  if (option) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = option.label;
+    button.addEventListener('click', () => {
+      el.classList.remove('visible');
+      option.action();
+    }, { once: true });
+    el.appendChild(button);
+  }
   el.classList.add('visible');
   clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => el.classList.remove('visible'), 1600);
+  flashTimer = setTimeout(() => el.classList.remove('visible'), option ? 6000 : 1600);
 }

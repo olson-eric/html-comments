@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { renderMarkdown } = require('./public/markdown.js');
+const { resolveAnchor } = require('./public/anchor-resolver.js');
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help') || argv.includes('-h')) {
@@ -264,14 +265,15 @@ function buildTree(absDir, relDir = '', archived = readArchived(), perms = readP
     } else if (e.isFile() && fileKind(e.name)) {
       if (!canReadRel(childRel, identity, perms)) continue;
       const data = readComments(childRel);
-      const open = data.comments.filter((c) => !c.resolved).length;
+      const comments = activeComments(data);
+      const open = comments.filter((c) => !c.resolved).length;
       const node = {
         name: e.name,
         path: docPathFor(childRel),
         file: childRel,
         type: 'file',
         kind: fileKind(e.name),
-        commentCount: data.comments.length,
+        commentCount: comments.length,
         openCount: open,
       };
       if (archived.has(childRel)) node.archived = true;
@@ -304,6 +306,10 @@ function readComments(relPath) {
   }
 }
 
+function activeComments(data) {
+  return data.comments.filter((comment) => !comment.deletedAt);
+}
+
 // All JSON persistence goes through a temp-file-plus-rename so a crash
 // mid-write can't leave a truncated file behind.
 function writeJsonAtomic(file, value) {
@@ -314,6 +320,81 @@ function writeJsonAtomic(file, value) {
 
 function writeComments(relPath, data) {
   writeJsonAtomic(commentsFile(relPath), { ...data, path: relPath });
+}
+
+const HTML_ENTITIES = {
+  amp: '&', apos: "'", gt: '>', lt: '<', nbsp: '\u00a0', quot: '"',
+  copy: '©', hellip: '…', mdash: '—', ndash: '–', rsquo: '’', lsquo: '‘',
+  rdquo: '”', ldquo: '“', bull: '•', middot: '·', trade: '™', reg: '®',
+};
+
+function decodeHtmlEntities(text) {
+  return text.replace(/&(#(?:x[0-9a-f]+|\d+)|[a-z][a-z0-9]+);/gi, (whole, entity) => {
+    if (entity[0] === '#') {
+      const hex = entity[1].toLowerCase() === 'x';
+      const value = parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+      try { return Number.isFinite(value) ? String.fromCodePoint(value) : whole; } catch { return whole; }
+    }
+    return Object.prototype.hasOwnProperty.call(HTML_ENTITIES, entity.toLowerCase())
+      ? HTML_ENTITIES[entity.toLowerCase()]
+      : whole;
+  });
+}
+
+// Mirrors collectText(document.body) in the viewer for server-rendered HTML:
+// keep text-node boundaries concatenated, discard markup/comments, and decode
+// character references. The body slice also excludes title/style text in head.
+function htmlBodyText(html) {
+  const body = /<body\b[^>]*>([\s\S]*?)<\/body\s*>/i.exec(html);
+  let source = body ? body[1] : html.replace(/<head\b[^>]*>[\s\S]*?<\/head\s*>/gi, '');
+  source = source.replace(/<!--[\s\S]*?-->|<![^>]*>|<[^>]*>/g, '');
+  return decodeHtmlEntities(source);
+}
+
+function renderedTextForFile(f) {
+  if (f.kind === 'markdown') return htmlBodyText(markdownDocument(f));
+  if (f.kind === 'html') return htmlBodyText(fs.readFileSync(f.abs, 'utf8'));
+  return null;
+}
+
+function reanchorComments(f) {
+  const fullText = renderedTextForFile(f);
+  if (fullText === null) return { rewritten: 0, orphaned: 0, fuzzy: 0 };
+  const data = readComments(f.rel);
+  let changed = false;
+  let rewritten = 0;
+  let orphaned = 0;
+  let fuzzy = 0;
+  const now = new Date().toISOString();
+
+  for (const comment of data.comments) {
+    if (comment.deletedAt) continue;
+    const anchor = comment.anchor;
+    if (!anchor || anchor.type === 'region' || typeof anchor.startIdx !== 'number') continue;
+    const match = resolveAnchor(fullText, anchor);
+    if (!match) {
+      orphaned++;
+      if (!anchor.stale) {
+        anchor.stale = true;
+        anchor.staleSince = now;
+        changed = true;
+      }
+      continue;
+    }
+
+    const wasStale = !!anchor.stale;
+    if (anchor.startIdx !== match.startIdx || anchor.length !== match.length || wasStale) {
+      anchor.startIdx = match.startIdx;
+      anchor.length = match.length;
+      delete anchor.stale;
+      delete anchor.staleSince;
+      rewritten++;
+      if (match.method === 'fuzzy') fuzzy++;
+      changed = true;
+    }
+  }
+  if (changed) writeComments(f.rel, data);
+  return { rewritten, orphaned, fuzzy };
 }
 
 // Archive is a metadata flag, not a move: the file, its doc path, shared
@@ -801,7 +882,7 @@ router.post('/api/agent/queue', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
   if (!requireReadable(req, res, f.rel)) return;
-  const comments = readComments(f.rel).comments.filter((comment) => !comment.resolved);
+  const comments = activeComments(readComments(f.rel)).filter((comment) => !comment.resolved);
   if (!comments.length) return res.status(400).json({ error: 'no open comments to send' });
   const jobs = readAgentQueue();
   const requestedBy = identityFor(req) || undefined;
@@ -851,7 +932,7 @@ router.get('/api/file', (req, res) => {
     modifiedAt: stat.mtime.toISOString(),
     archived: readArchived().has(f.rel) || undefined,
     visibility: p ? p.visibility : 'everyone',
-    comments: data.comments,
+    comments: activeComments(data),
   });
 });
 
@@ -873,10 +954,11 @@ router.get('/api/file/comments', (req, res) => {
   if (!f) return res.status(404).json({ error: 'not found' });
   if (!requireReadable(req, res, f.rel)) return;
   const data = readComments(f.rel);
-  let comments = data.comments;
+  let comments = activeComments(data);
   const status = req.query.status;
   if (status === 'open') comments = comments.filter((c) => !c.resolved);
   if (status === 'resolved') comments = comments.filter((c) => c.resolved);
+  if (status === 'deleted') comments = data.comments.filter((c) => c.deletedAt);
   res.json({ path: f.doc, file: f.rel, comments });
 });
 
@@ -943,7 +1025,7 @@ router.post('/api/file/comments/:cid/replies', (req, res) => {
   if (!text) return res.status(400).json({ error: 'text required' });
   const data = readComments(f.rel);
   const comment = data.comments.find((c) => c.id === req.params.cid);
-  if (!comment) return res.status(404).json({ error: 'comment not found' });
+  if (!comment || comment.deletedAt) return res.status(404).json({ error: 'comment not found' });
   const reply = {
     id: newId(),
     text,
@@ -967,7 +1049,7 @@ router.post('/api/file/comments/:cid/complete', (req, res) => {
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
   const data = readComments(f.rel);
   const comment = data.comments.find((candidate) => candidate.id === req.params.cid);
-  if (!comment) return res.status(404).json({ error: 'comment not found' });
+  if (!comment || comment.deletedAt) return res.status(404).json({ error: 'comment not found' });
   const reply = {
     id: newId(),
     text,
@@ -990,15 +1072,36 @@ router.patch('/api/file/comments/:cid', (req, res) => {
   const data = readComments(f.rel);
   const comment = data.comments.find((c) => c.id === req.params.cid);
   if (!comment) return res.status(404).json({ error: 'comment not found' });
+  const restoring = req.body.deleted === false && !!comment.deletedAt;
+  if (comment.deletedAt && !restoring) return res.status(404).json({ error: 'comment not found' });
   const wasResolved = comment.resolved;
   if (typeof req.body.resolved === 'boolean') comment.resolved = req.body.resolved;
   if (typeof req.body.text === 'string') comment.text = req.body.text;
+  let reattached = false;
+  if (restoring) {
+    delete comment.deletedAt;
+    delete comment.deletedBy;
+  }
+  if (req.body.anchor && typeof req.body.anchor === 'object') {
+    const anchor = normalizeAnchor(req.body.anchor);
+    if (!anchor) return res.status(400).json({ error: 'invalid anchor' });
+    comment.previousAnchors = comment.previousAnchors || [];
+    comment.previousAnchors.push(comment.anchor);
+    comment.anchor = anchor;
+    reattached = true;
+  }
   writeComments(f.rel, data);
   if (comment.resolved !== wasResolved) {
     recordEvent(comment.resolved ? 'resolved' : 'unresolved', f, {
       commentId: comment.id,
       author: identityFor(req) || undefined,
     });
+  }
+  if (reattached) {
+    recordEvent('reattached', f, { commentId: comment.id, author: identityFor(req) || undefined });
+  }
+  if (restoring) {
+    recordEvent('restored', f, { commentId: comment.id, author: identityFor(req) || undefined });
   }
   res.json(comment);
 });
@@ -1008,12 +1111,14 @@ router.delete('/api/file/comments/:cid', (req, res) => {
   if (!f) return res.status(404).json({ error: 'not found' });
   if (!requireReadable(req, res, f.rel)) return;
   const data = readComments(f.rel);
-  const idx = data.comments.findIndex((c) => c.id === req.params.cid);
-  if (idx === -1) return res.status(404).json({ error: 'comment not found' });
-  const [removed] = data.comments.splice(idx, 1);
+  const removed = data.comments.find((c) => c.id === req.params.cid);
+  if (!removed || removed.deletedAt) return res.status(404).json({ error: 'comment not found' });
+  removed.deletedAt = new Date().toISOString();
+  const deletedBy = identityFor(req);
+  if (deletedBy) removed.deletedBy = deletedBy;
   writeComments(f.rel, data);
-  recordEvent('deleted', f, { commentId: removed.id, author: identityFor(req) || undefined });
-  res.json({ ok: true });
+  recordEvent('deleted', f, { commentId: removed.id, author: deletedBy || undefined });
+  res.json({ ok: true, comment: removed });
 });
 
 // ----- Sharing -----
@@ -1106,6 +1211,8 @@ router.put(
     const updated = fs.existsSync(target.abs);
     fs.mkdirSync(path.dirname(target.abs), { recursive: true });
     writeFileAtomic(target.abs, body);
+    const published = resolveFile(target.rel);
+    const anchorOutcomes = published ? reanchorComments(published) : { rewritten: 0, orphaned: 0, fuzzy: 0 };
     // First identified upload of a path claims ownership at the configured
     // default visibility; an existing entry is never re-stamped.
     const identity = identityFor(req);
@@ -1125,6 +1232,15 @@ router.put(
       bytes: body.length,
       updated,
     });
+    if (anchorOutcomes.rewritten) {
+      recordEvent('anchors_rewritten', { doc, rel: target.rel }, {
+        count: anchorOutcomes.rewritten,
+        fuzzy: anchorOutcomes.fuzzy,
+      });
+    }
+    if (anchorOutcomes.orphaned) {
+      recordEvent('anchors_orphaned', { doc, rel: target.rel }, { count: anchorOutcomes.orphaned });
+    }
     res.json({ path: doc, file: target.rel, bytes: body.length, updated, visibility });
   }
 );
