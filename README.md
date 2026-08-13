@@ -75,7 +75,7 @@ usually look best with it left off.
 - `quote` — the literal selected text
 - `contextBefore` / `contextAfter` — 40 chars on either side
 
-This survives most cosmetic edits to the underlying HTML. If you rewrite a file from scratch, anchors may drift — the quote/context remain useful for an agent to find the right spot. For markdown, anchors index into the *rendered* text (the same text `GET /api/file/html?path=doc.md` returns), not the raw markdown source.
+When a document is republished, the server re-anchors each thread against the new rendered text using exact quote/context matching, whitespace-normalized matching, then a conservative fuzzy fallback. It updates `startIdx`/`length` but keeps the original quote and context as an audit trail. If the text is gone, the anchor gets `stale: true` and `staleSince`; the viewer shows a **text changed** badge instead of silently dropping the highlight. Reviewers can re-attach the thread to newly selected text, which moves the old anchor into `previousAnchors`. For markdown, anchors index into the *rendered* text (the same text `GET /api/file/html?path=doc.md` returns), not the raw markdown source.
 
 **Image** comments are anchored to a rectangular region, stored as fractions of the image size:
 
@@ -130,8 +130,8 @@ Files are identified by their extension-free doc path relative to the served roo
 | `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`image`) and comment counts |
 | `GET` | `/api/documents?status=open\|resolved\|uncommented\|all&limit=50` | Flat, bounded agent inbox with total count; defaults to documents with open comments |
 | `GET` | `/api/agent/home` | Compact dashboard with document, open-review, and queued-review counts |
-| `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Kinds: `created`, `replied`, `resolved`, `unresolved`, `deleted`, `queued` (review events) and `uploaded`, `removed`, `moved`, `archived`, `unarchived`, `shared` (file events). Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
-| `GET` | `/api/file?path=...` | File metadata (incl. `kind`) + all comments |
+| `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Comment/review kinds include `created`, `replied`, `resolved`, `unresolved`, `deleted`, `restored`, `reattached`, and `queued`; republishing can add `anchors_rewritten` / `anchors_orphaned` events with counts. File kinds include `uploaded`, `removed`, `moved`, `archived`, `unarchived`, and `shared`. Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
+| `GET` | `/api/file?path=...` | File metadata (incl. `kind`) + active comments (soft-deleted comments are excluded) |
 | `GET` | `/api/file/html?path=...` | The raw HTML; for markdown, the *rendered* HTML (the text anchors index into) |
 | `GET` | `/raw/<file>` | The file as-is, by real filename (use this for markdown source / image bytes / sibling assets) |
 | `GET` | `/render/<path>` | Markdown rendered as a standalone HTML page (what the viewer's iframe shows) |
@@ -149,12 +149,12 @@ Documents restricted via sharing return 404 on every route (tree, file, comments
 
 | Method | Path | Body | Description |
 | --- | --- | --- | --- |
-| `GET` | `/api/file/comments?path=...&status=open\|resolved\|all` | — | List comments |
+| `GET` | `/api/file/comments?path=...&status=open\|resolved\|all\|deleted` | — | List comments. `all` still excludes soft-deleted threads; use `deleted` for the trash view. |
 | `POST` | `/api/file/comments?path=...` | `{ anchor, text, author? }` — anchor is `{ startIdx, length, quote?, contextBefore?, contextAfter? }` for html/markdown or `{ x, y, w, h, imageWidth?, imageHeight? }` for images | Create a comment |
 | `POST` | `/api/file/comments/:cid/replies?path=...` | `{ text, author? }` | Reply on a thread |
 | `POST` | `/api/file/comments/:cid/complete?path=...` | `{ text, author? }` | Atomically reply and resolve—the normal agent completion action |
-| `PATCH` | `/api/file/comments/:cid?path=...` | `{ resolved?: boolean, text?: string }` | Resolve / edit |
-| `DELETE` | `/api/file/comments/:cid?path=...` | — | Delete |
+| `PATCH` | `/api/file/comments/:cid?path=...` | `{ resolved?: boolean, text?: string, anchor?: object, deleted?: false }` | Resolve/edit, manually re-attach with a replacement anchor, or restore a soft-deleted thread with `{ "deleted": false }` |
+| `DELETE` | `/api/file/comments/:cid?path=...` | — | Soft-delete. The thread is removed from normal and agent views but retained with `deletedAt` for restoration. |
 
 ### Push feedback to a waiting agent
 

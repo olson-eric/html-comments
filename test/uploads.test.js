@@ -75,6 +75,79 @@ test('upload API', async (t) => {
     assert.strictEqual(after.comments[0].text, 'nice');
   });
 
+  await t.test('republish re-anchors exact, repeated, fuzzy, and deleted text', async () => {
+    const makeDoc = async (name, text) => {
+      await fetch(`${base}/api/upload/anchors/${name}.html`, {
+        method: 'PUT',
+        body: `<html><body>${text}</body></html>`,
+      });
+    };
+    const comment = async (name, anchor) => {
+      const res = await fetch(`${base}/api/file/comments?path=anchors/${name}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ anchor, text: name, author: 'reviewer' }),
+      });
+      assert.strictEqual(res.status, 200);
+      return res.json();
+    };
+    const comments = async (name) =>
+      (await (await fetch(`${base}/api/file?path=anchors/${name}`)).json()).comments;
+
+    await makeDoc('shifted', 'before target after');
+    await comment('shifted', { startIdx: 7, length: 6, quote: 'target', contextBefore: 'before ', contextAfter: ' after' });
+    await makeDoc('shifted', 'new prefix before target after');
+    const shifted = (await comments('shifted'))[0].anchor;
+    assert.equal(shifted.startIdx, 18);
+    assert.equal(shifted.quote, 'target');
+    assert.equal(shifted.stale, undefined);
+
+    await fetch(`${base}/api/upload/anchors/markdown.md`, { method: 'PUT', body: '# Heading\n\nBefore target after\n' });
+    await comment('markdown', { startIdx: 15, length: 6, quote: 'target', contextBefore: 'HeadingBefore ', contextAfter: ' after\n' });
+    await fetch(`${base}/api/upload/anchors/markdown.md`, { method: 'PUT', body: '# Heading\n\nNew intro\n\nBefore target after\n' });
+    assert.equal((await comments('markdown'))[0].anchor.startIdx, 24);
+
+    await makeDoc('repeated', 'right target');
+    await comment('repeated', { startIdx: 6, length: 6, quote: 'target', contextBefore: 'right ', contextAfter: ' tail' });
+    const repeatedText = 'left target middle right target tail';
+    await makeDoc('repeated', repeatedText);
+    assert.equal((await comments('repeated'))[0].anchor.startIdx, repeatedText.lastIndexOf('target'));
+
+    await makeDoc('fuzzy', 'before quick brown fox after');
+    await comment('fuzzy', { startIdx: 7, length: 15, quote: 'quick brown fox', contextBefore: 'before ', contextAfter: ' after' });
+    await makeDoc('fuzzy', 'prefix before quick brown cat after');
+    const fuzzy = (await comments('fuzzy'))[0].anchor;
+    assert.equal(fuzzy.startIdx, 14);
+    assert.equal(fuzzy.length, 15);
+    assert.equal(fuzzy.quote, 'quick brown fox');
+    assert.equal(fuzzy.stale, undefined);
+
+    await makeDoc('orphan', 'before doomed selection after');
+    await comment('orphan', { startIdx: 7, length: 16, quote: 'doomed selection', contextBefore: 'before ', contextAfter: ' after' });
+    await makeDoc('orphan', 'before replacement is unrelated after');
+    const orphan = (await comments('orphan'))[0].anchor;
+    assert.equal(orphan.stale, true);
+    assert.match(orphan.staleSince, /^\d{4}-\d\d-\d\dT/);
+    assert.equal(orphan.quote, 'doomed selection');
+
+    await makeDoc('manual', 'old selected text');
+    const manualComment = await comment('manual', { startIdx: 4, length: 8, quote: 'selected' });
+    const newAnchor = { startIdx: 0, length: 3, quote: 'new', contextBefore: '', contextAfter: ' selected text' };
+    const patched = await (await fetch(`${base}/api/file/comments/${manualComment.id}?path=anchors/manual`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor: newAnchor }),
+    })).json();
+    assert.deepEqual(patched.anchor, newAnchor);
+    assert.equal(patched.previousAnchors.length, 1);
+    assert.equal(patched.previousAnchors[0].quote, 'selected');
+
+    const events = (await (await fetch(`${base}/api/updates`)).json()).events;
+    assert.ok(events.some((e) => e.kind === 'anchors_rewritten' && e.path === 'anchors/fuzzy' && e.fuzzy === 1));
+    assert.ok(events.some((e) => e.kind === 'anchors_orphaned' && e.path === 'anchors/orphan' && e.count === 1));
+    assert.ok(events.some((e) => e.kind === 'reattached' && e.path === 'anchors/manual'));
+  });
+
   await t.test('identity header stamps authorship, overriding the body author', async () => {
     const res = await fetch(`${base}/api/file/comments?path=docs/spec`, {
       method: 'POST',
@@ -99,6 +172,33 @@ test('upload API', async (t) => {
       body: JSON.stringify({ anchor: { startIdx: 0, length: 4, quote: 'Spec' }, text: 'plain', author: 'bob' }),
     });
     assert.strictEqual((await res.json()).author, 'bob');
+  });
+
+  await t.test('deleting a comment is reversible and hides it from active views', async () => {
+    const created = await (await fetch(`${base}/api/file/comments?path=docs/spec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor: { startIdx: 0, length: 4, quote: 'Spec' }, text: 'restore me', author: 'bob' }),
+    })).json();
+    const deleted = await (await fetch(`${base}/api/file/comments/${created.id}?path=docs/spec`, {
+      method: 'DELETE',
+    })).json();
+    assert.match(deleted.comment.deletedAt, /^\d{4}-\d\d-\d\dT/);
+
+    const active = await (await fetch(`${base}/api/file?path=docs/spec`)).json();
+    assert.equal(active.comments.some((comment) => comment.id === created.id), false);
+    const trash = await (await fetch(`${base}/api/file/comments?path=docs/spec&status=deleted`)).json();
+    assert.equal(trash.comments.some((comment) => comment.id === created.id), true);
+
+    const restored = await (await fetch(`${base}/api/file/comments/${created.id}?path=docs/spec`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ deleted: false }),
+    })).json();
+    assert.equal(restored.deletedAt, undefined);
+    assert.equal(restored.text, 'restore me');
+    const after = await (await fetch(`${base}/api/file?path=docs/spec`)).json();
+    assert.equal(after.comments.some((comment) => comment.id === created.id), true);
   });
 
   await t.test('api/root reports identity and the derived home folder slug', async () => {
