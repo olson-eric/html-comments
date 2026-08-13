@@ -790,10 +790,6 @@ function onFrameSelection() {
     return;
   }
   const range = sel.getRangeAt(0);
-  if (range.startContainer.nodeType !== Node.TEXT_NODE || range.endContainer.nodeType !== Node.TEXT_NODE) {
-    popover.hidden = true;
-    return;
-  }
   const anchor = serializeRange(range, doc.body);
   if (!anchor) {
     popover.hidden = true;
@@ -914,22 +910,15 @@ function serializeRange(range, root) {
 }
 
 function textOffsetOf(node, offset, root) {
-  if (node.nodeType !== Node.TEXT_NODE) {
-    if (offset > 0 && node.childNodes[offset - 1]) {
-      const inner = collectText(node.childNodes[offset - 1]).length;
-      const beforeNode = textOffsetOf(node, offset - 1, root);
-      return beforeNode + inner;
-    }
-    return textOffsetOf(node, 0, root);
+  if (node !== root && !root.contains(node)) return -1;
+  const range = root.ownerDocument.createRange();
+  try {
+    range.setStart(root, 0);
+    range.setEnd(node, offset);
+  } catch {
+    return -1;
   }
-  let total = 0;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-  let n;
-  while ((n = walker.nextNode())) {
-    if (n === node) return total + offset;
-    total += n.nodeValue.length;
-  }
-  return -1;
+  return collectText(range.cloneContents()).length;
 }
 
 function collectText(root) {
