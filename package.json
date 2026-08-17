@@ -41,6 +41,6 @@
   "homepage": "https://github.com/olson-eric/html-comments#readme",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^5.2.1"
   }
 }
