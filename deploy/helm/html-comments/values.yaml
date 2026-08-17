@@ -47,7 +47,7 @@ ingress:
           pathType: Prefix
   tls: []
 
-# The directory of .html/.md/image files to serve, mounted at /content.
+# The directory of .html/.md/.json/.jsonl/image files to serve, mounted at /content.
 # Pick exactly one source; if none is set, an emptyDir is used (starts empty —
 # useful when another process, e.g. a sidecar or agent, writes files into it).
 content:

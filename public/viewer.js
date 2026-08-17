@@ -469,7 +469,7 @@ function makeMenuFile(node) {
   const a = document.createElement('a');
   a.className = 'folder-menu-item' + (node.path === state.meta.path ? ' current' : '');
   a.href = `v/${encodePath(node.path)}`;
-  const icon = { html: '📄', markdown: '📝', image: '🖼️' }[node.kind] || '📄';
+  const icon = { html: '📄', markdown: '📝', json: '🔢', image: '🖼️' }[node.kind] || '📄';
   const badge = node.openCount > 0
     ? `<span class="badge badge-open" title="${node.openCount} open / ${node.commentCount} total">${node.openCount}</span>`
     : node.commentCount > 0
@@ -494,7 +494,7 @@ function isImageDoc() {
 // not the extension-free doc path.
 function docUrl() {
   const encoded = encodePath(state.meta.file);
-  return state.meta.kind === 'markdown' ? `render/${encoded}` : `raw/${encoded}`;
+  return ['markdown', 'json'].includes(state.meta.kind) ? `render/${encoded}` : `raw/${encoded}`;
 }
 
 async function pollComments() {

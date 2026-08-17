@@ -21,7 +21,7 @@
     <header class="home-header">
       <button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle dark mode">🌙</button>
       <h1>html-comments</h1>
-      <p>Browse HTML, markdown, and image files in <code id="root-path">…</code>. Pick one to read and leave inline comments.</p>
+      <p>Browse HTML, markdown, JSON, JSONL, and image files in <code id="root-path">…</code>. Pick one to read and leave inline comments.</p>
     </header>
 
     <main class="home-main">
@@ -58,14 +58,14 @@ html-comments publish artifact.html --to foo/bar.html</code></pre>
     <dialog id="upload-dialog" class="upload-dialog">
       <form method="dialog" id="upload-form">
         <h3>Upload files</h3>
-        <p class="muted">Publish <code>.html</code>, <code>.md</code>, or image files. Re-uploading to the same folder and name updates the page — its link and comments stay put.</p>
+        <p class="muted">Publish <code>.html</code>, <code>.md</code>, <code>.json</code>, <code>.jsonl</code>, or image files. Re-uploading to the same folder and name updates the page — its link and comments stay put.</p>
         <p id="upload-privacy-hint" class="muted" hidden>New uploads are <strong>private to you</strong> until you share them from the viewer's Share button.</p>
         <label class="upload-label" for="upload-dest">Folder</label>
         <input id="upload-dest" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. my_name/project" />
         <div id="upload-drop" class="upload-drop" tabindex="0">
           <span id="upload-drop-hint">Drag files here or <button type="button" id="upload-browse" class="linklike">browse</button></span>
           <input id="upload-files" type="file" multiple hidden
-                 accept=".html,.htm,.md,.markdown,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp" />
+                 accept=".html,.htm,.md,.markdown,.json,.jsonl,.png,.jpg,.jpeg,.gif,.webp,.svg,.avif,.bmp" />
         </div>
         <ul id="upload-list" class="upload-list"></ul>
         <p id="upload-status" class="muted" hidden></p>

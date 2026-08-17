@@ -58,6 +58,32 @@ test('upload API', async (t) => {
     assert.strictEqual(fs.readFileSync(path.join(ROOT, 'reviews', 'intro.html'), 'utf8'), '<html><body>hello</body></html>');
   });
 
+  await t.test('PUT accepts JSON and JSONL and JSON comments re-anchor on update', async () => {
+    const source = '{"status":"target"}\n';
+    const created = await fetch(`${base}/api/upload/data/state.json`, { method: 'PUT', body: source });
+    assert.strictEqual(created.status, 200);
+    assert.strictEqual((await created.json()).path, 'data/state');
+
+    const comment = await fetch(`${base}/api/file/comments?path=data/state`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        anchor: { startIdx: source.indexOf('target'), length: 6, quote: 'target', contextBefore: '"status":"', contextAfter: '"}\n' },
+        text: 'Review this value',
+      }),
+    });
+    assert.strictEqual(comment.status, 200);
+
+    const updatedSource = '{"version":1,"status":"target"}\n';
+    assert.strictEqual((await fetch(`${base}/api/upload/data/state.json`, { method: 'PUT', body: updatedSource })).status, 200);
+    const comments = await (await fetch(`${base}/api/file/comments?path=data/state`)).json();
+    assert.strictEqual(comments.comments[0].anchor.startIdx, updatedSource.indexOf('target'));
+
+    const jsonl = await fetch(`${base}/api/upload/data/events.jsonl`, { method: 'PUT', body: '{"id":1}\n{"id":2}\n' });
+    assert.strictEqual(jsonl.status, 200);
+    assert.strictEqual((await jsonl.json()).path, 'data/events');
+  });
+
   await t.test('PUT overwrites an existing path and comments survive', async () => {
     const created = await fetch(`${base}/api/upload/docs/spec.md`, { method: 'PUT', body: '# Spec v2\n' });
     assert.strictEqual((await created.json()).updated, true);
