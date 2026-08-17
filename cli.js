@@ -84,7 +84,7 @@ function readStdin() {
 
 function help() {
   output({
-    description: 'Review HTML, markdown, and image artifacts with human comments and an agent-friendly workflow.',
+    description: 'Review HTML, markdown, JSON, and image artifacts with human comments and an agent-friendly workflow.',
     server: DEFAULT_SERVER,
     commands: {
       'html-comments': 'Show documents needing attention and queued feedback',

@@ -1,6 +1,6 @@
 apiVersion: v2
 name: html-comments
-description: Render a directory of HTML, markdown, and image files with Google-Docs-style inline comments, plus a JSON API for agents.
+description: Render HTML, markdown, JSON, and image files with inline comments, plus a JSON API for agents.
 type: application
 version: 0.2.0
 appVersion: "0.1.0"

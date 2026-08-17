@@ -15,7 +15,7 @@ services:
       # X-Forwarded-Email. Only set when a proxy strips inbound copies.
       TRUST_IDENTITY_HEADER: "${TRUST_IDENTITY_HEADER:-}"
     volumes:
-      # Directory of .html/.md/image files to serve. Read-only by default;
+      # Directory of .html/.md/.json/.jsonl/image files to serve. Read-only by default;
       # set CONTENT_MODE=rw when UPLOADS_ENABLED=1. Defaults to the sample
       # ./html directory in this repo — point HTML_DIR at your own files.
       - ${HTML_DIR:-./html}:/content:${CONTENT_MODE:-ro}

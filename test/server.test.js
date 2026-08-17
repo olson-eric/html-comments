@@ -17,6 +17,8 @@ fs.mkdirSync(path.join(ROOT, 'shots'));
 fs.writeFileSync(path.join(ROOT, 'docs', 'spec.html'), '<html><head><title>The Spec</title></head><body>hello spec</body></html>');
 fs.writeFileSync(path.join(ROOT, 'docs', 'spec.md'), '# Spec (markdown twin)\n');
 fs.writeFileSync(path.join(ROOT, 'notes.md'), '# Notes\n\nsome notes\n');
+fs.writeFileSync(path.join(ROOT, 'data.json'), '{"message":"<select this>"}\n');
+fs.writeFileSync(path.join(ROOT, 'events.jsonl'), '{"id":1}\n{"id":2}\n');
 // 1x1 transparent PNG
 fs.writeFileSync(
   path.join(ROOT, 'shots', 'screen.png'),
@@ -44,9 +46,13 @@ test('resolveFile still accepts real paths; shadowed twin keeps its extension', 
   assert.strictEqual(md.doc, 'docs/spec.md');
 });
 
-test('resolveFile handles markdown and images without extension', () => {
+test('resolveFile handles markdown, JSON, JSONL, and images without extension', () => {
   assert.strictEqual(resolveFile('notes').rel, 'notes.md');
   assert.strictEqual(resolveFile('notes').doc, 'notes');
+  assert.strictEqual(resolveFile('data').kind, 'json');
+  assert.strictEqual(resolveFile('data').rel, 'data.json');
+  assert.strictEqual(resolveFile('events').kind, 'json');
+  assert.strictEqual(resolveFile('events').rel, 'events.jsonl');
   const img = resolveFile('shots/screen');
   assert.strictEqual(img.rel, 'shots/screen.png');
   assert.strictEqual(img.kind, 'image');
@@ -172,6 +178,23 @@ test('HTTP routes', async (t) => {
     const res = await fetch(`${base}/render/notes`);
     assert.strictEqual(res.status, 200);
     assert.match(await res.text(), /some notes/);
+  });
+
+  await t.test('JSON and JSONL render as selectable escaped source', async () => {
+    const json = await fetch(`${base}/render/data`);
+    assert.strictEqual(json.status, 200);
+    assert.match(json.headers.get('content-type'), /^text\/html/);
+    const jsonHtml = await json.text();
+    assert.match(jsonHtml, /<pre>\{&quot;message&quot;:&quot;&lt;select this&gt;&quot;\}\n<\/pre>/);
+    assert.doesNotMatch(jsonHtml, /<select this>/);
+
+    const jsonl = await fetch(`${base}/render/events.jsonl`);
+    assert.strictEqual(jsonl.status, 200);
+    assert.match(await jsonl.text(), /<pre>\{&quot;id&quot;:1\}\n\{&quot;id&quot;:2\}\n<\/pre>/);
+
+    const meta = await (await fetch(`${base}/api/file?path=events`)).json();
+    assert.strictEqual(meta.kind, 'json');
+    assert.strictEqual(meta.path, 'events');
   });
 });
 

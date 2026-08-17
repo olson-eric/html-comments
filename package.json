@@ -1,7 +1,7 @@
 {
   "name": "html-comments",
   "version": "0.1.0",
-  "description": "Render a directory of HTML, markdown, and image files with Google-Docs-style inline comments. Comes with a JSON API for agents to read, reply, and resolve.",
+  "description": "Render a directory of HTML, markdown, JSON, and image files with Google-Docs-style inline comments. Comes with a JSON API for agents to read, reply, and resolve.",
   "main": "server.js",
   "bin": {
     "html-comments": "cli.js"

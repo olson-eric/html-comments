@@ -8,13 +8,13 @@ const { resolveAnchor } = require('./public/anchor-resolver.js');
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log(`html-comments — render HTML, markdown, and images with inline comments
+  console.log(`html-comments — render HTML, markdown, JSON, and images with inline comments
 
 Usage:
   html-comments [<html-dir>]
 
 Options:
-  <html-dir>            Directory of .html/.md/image files to serve (default: ./html)
+  <html-dir>            Directory of .html/.md/.json/.jsonl/image files to serve (default: ./html)
 
 Environment:
   HTML_DIR              Same as positional arg
@@ -144,11 +144,12 @@ const newId = () => crypto.randomBytes(6).toString('hex');
 const KIND_PATTERNS = [
   ['html', /\.html?$/i],
   ['markdown', /\.(md|markdown)$/i],
+  ['json', /\.(json|jsonl)$/i],
   ['image', /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i],
 ];
 
 // Priority order for resolving an extension-free doc path to a file.
-const EXTENSIONS = ['.html', '.htm', '.md', '.markdown', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.bmp'];
+const EXTENSIONS = ['.html', '.htm', '.md', '.markdown', '.json', '.jsonl', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.bmp'];
 
 function fileKind(name) {
   for (const [kind, re] of KIND_PATTERNS) {
@@ -353,6 +354,7 @@ function htmlBodyText(html) {
 
 function renderedTextForFile(f) {
   if (f.kind === 'markdown') return htmlBodyText(markdownDocument(f));
+  if (f.kind === 'json') return fs.readFileSync(f.abs, 'utf8').replace(/\r\n?/g, '\n');
   if (f.kind === 'html') return htmlBodyText(fs.readFileSync(f.abs, 'utf8'));
   return null;
 }
@@ -695,6 +697,30 @@ ${renderMarkdown(md, { breaks: false })}
 `;
 }
 
+// JSON and JSONL are shown as escaped source rather than interpreted markup.
+// Keeping the source byte-for-character in one <pre> also makes comment anchor
+// offsets stable and lets reanchoring use the file contents directly.
+function jsonDocument(f) {
+  const source = fs.readFileSync(f.abs, 'utf8');
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtmlAttr(path.basename(f.abs))}</title>
+<style>
+  body { margin: 0; padding: 2rem; color: #1f2328; background: #ffffff; }
+  pre {
+    margin: 0; white-space: pre; tab-size: 2;
+    font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+</style>
+</head>
+<body><pre>${escapeHtmlAttr(source)}</pre></body>
+</html>
+`;
+}
+
 function escapeHtmlAttr(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
@@ -936,8 +962,8 @@ router.get('/api/file', (req, res) => {
   });
 });
 
-// Raw HTML for .html files; rendered HTML for markdown (what the viewer shows,
-// and the text that comment anchors index into).
+// Raw HTML for .html files; rendered HTML for markdown and JSON/JSONL (what
+// the viewer shows, and the text that comment anchors index into).
 router.get('/api/file/html', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).send('not found');
@@ -945,6 +971,9 @@ router.get('/api/file/html', (req, res) => {
   if (f.kind === 'image') return res.status(400).json({ error: 'not renderable as html; fetch via /raw/' });
   if (f.kind === 'markdown') {
     return res.type('text/html; charset=utf-8').send(markdownDocument(f));
+  }
+  if (f.kind === 'json') {
+    return res.type('text/html; charset=utf-8').send(jsonDocument(f));
   }
   res.type('text/html; charset=utf-8').send(fs.readFileSync(f.abs, 'utf8'));
 });
@@ -963,8 +992,8 @@ router.get('/api/file/comments', (req, res) => {
 });
 
 // Two anchor shapes: text anchors ({startIdx, length, quote, context*}) for
-// html/markdown, and region anchors ({x, y, w, h} as fractions of the image,
-// plus the image's pixel size at comment time) for images.
+// HTML, markdown, and JSON; and region anchors ({x, y, w, h} as fractions of
+// the image, plus the image's pixel size at comment time) for images.
 function normalizeAnchor(anchor) {
   const nums = ['x', 'y', 'w', 'h'];
   if (nums.every((k) => typeof anchor[k] === 'number' && Number.isFinite(anchor[k]))) {
@@ -1200,7 +1229,7 @@ router.put(
     const target = resolveUploadTarget(rel);
     if (!target) {
       return res.status(400).json({
-        error: 'invalid upload path: must stay inside the served root, contain no hidden segments, and end in a supported extension (.html/.htm/.md/.markdown or an image type)',
+        error: 'invalid upload path: must stay inside the served root, contain no hidden segments, and end in a supported extension (.html/.htm/.md/.markdown/.json/.jsonl or an image type)',
       });
     }
     // The permissions entry outlives the file (like its comment store), so a
@@ -1405,7 +1434,7 @@ router.get(/^\/raw\/(.+)$/, (req, res) => {
   res.sendFile(f.abs);
 });
 
-// Markdown rendered as a standalone HTML page (what the viewer's iframe loads).
+// Text formats rendered as standalone HTML pages (what the viewer's iframe loads).
 router.get(/^\/render\/(.+)$/, (req, res) => {
   let rel;
   try {
@@ -1414,9 +1443,9 @@ router.get(/^\/render\/(.+)$/, (req, res) => {
     return res.status(400).send('bad request');
   }
   const f = resolveFile(rel);
-  if (!f || f.kind !== 'markdown') return res.status(404).send('not found');
+  if (!f || !['markdown', 'json'].includes(f.kind)) return res.status(404).send('not found');
   if (!canRead(req, f.rel)) return res.status(404).send('not found');
-  res.type('text/html; charset=utf-8').send(markdownDocument(f));
+  res.type('text/html; charset=utf-8').send(f.kind === 'markdown' ? markdownDocument(f) : jsonDocument(f));
 });
 
 router.use(express.static(path.join(__dirname, 'public'), { index: false }));

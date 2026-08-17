@@ -14,4 +14,4 @@ curl -s "http://localhost:4747/api/file/comments?path=welcome" | jq
 ```
 
 To serve your own files instead, point `HTML_DIR` at a directory of
-`.html`, `.md`, or image files.
+`.html`, `.md`, `.json`, `.jsonl`, or image files.

@@ -1,6 +1,6 @@
 # html-comments
 
-Point this service at a directory of `.html`, `.md`, and image files and get a browser for them with Google-Docs-style inline commenting. Reviewers leave comments by selecting text (or drawing a box on an image); an agent reads/replies/resolves comments through a JSON API.
+Point this service at a directory of `.html`, `.md`, `.json`, `.jsonl`, and image files and get a browser for them with Google-Docs-style inline commenting. Reviewers leave comments by selecting text (or drawing a box on an image); an agent reads/replies/resolves comments through a JSON API.
 
 Built for reviewing artifacts produced by coding agents — design docs, feature mockups, workflow diagrams, UI screenshots, etc.
 
@@ -8,6 +8,7 @@ Supported file kinds:
 
 - **HTML** (`.html`, `.htm`) — rendered as-is in a sandboxed iframe.
 - **Markdown** (`.md`, `.markdown`) — rendered to HTML server-side (headings, lists, tables, code blocks, images, links). Comment anchoring works exactly like HTML: select rendered text.
+- **JSON and JSONL** (`.json`, `.jsonl`) — shown as escaped, monospaced source text. Select any text to anchor a comment to its exact source range.
 - **Images** (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.avif`, `.bmp`) — shown full-size; comments are anchored to rectangular regions you draw by dragging on the image.
 
 ## Quick start
@@ -24,7 +25,7 @@ Then open `http://localhost:4747` and you'll see a file tree. Click a file to op
 
 Every file is addressed by an **extension-free doc path**: `docs/spec.html` lives at `/v/docs/spec`. That's the URL the viewer uses and the one **Copy link** puts on your clipboard, so a pasted link never carries a file extension — an agent given `…/v/shots/screen` knows it's looking at a page in this service (comments, anchors, the JSON API) rather than mistaking the link for a bare `.png` to fetch or upload. Old-style `/v?path=docs/spec.html` links redirect to the new form.
 
-If two sibling files differ only by extension (`spec.html` and `spec.md`), the extension-free path resolves by kind priority (`.html`, `.htm`, `.md`, `.markdown`, then image extensions); the other file keeps its full name as its path and stays reachable that way.
+If two sibling files differ only by extension (`spec.html` and `spec.md`), the extension-free path resolves by kind priority (`.html`, `.htm`, `.md`, `.markdown`, `.json`, `.jsonl`, then image extensions); the other file keeps its full name as its path and stays reachable that way.
 
 To host the app under a URL prefix (e.g. behind a shared cloud gateway or an S3-backed deployment where each project mounts at its own subpath), set `BASE_PATH=/some/prefix` — every page, API route, and asset is served under it, and the frontend uses only relative URLs so links keep working wherever the app is mounted.
 
@@ -32,7 +33,7 @@ Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, has
 
 ## Publishing from the browser
 
-With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or drag in `.html`/`.md`/image files (multi-select works), choose a destination folder, and they're published instantly — made an artifact in Claude and want comments on it? Download it and upload it here, then share the link. Uploading to an existing name updates that page in place: the link and every comment thread stay put, so this is also how you ship a revision. The UI confirms before replacing files.
+With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or drag in `.html`/`.md`/`.json`/`.jsonl`/image files (multi-select works), choose a destination folder, and they're published instantly — made an artifact in Claude and want comments on it? Download it and upload it here, then share the link. Uploading to an existing name updates that page in place: the link and every comment thread stay put, so this is also how you ship a revision. The UI confirms before replacing files.
 
 When `TRUST_IDENTITY_HEADER` is configured, the destination is prefilled with your personal folder, derived from your signed-in identity (`eric.olson@corp.com` → `eric_olson/`). Nothing is created at login — the folder appears with your first upload.
 
@@ -70,12 +71,12 @@ usually look best with it left off.
 
 ## How comments are anchored
 
-**HTML and markdown** comments are anchored to a character range in the rendered page's plain text (computed by walking text nodes in document order). We also store:
+**HTML, markdown, JSON, and JSONL** comments are anchored to a character range in the rendered page's plain text (computed by walking text nodes in document order). We also store:
 
 - `quote` — the literal selected text
 - `contextBefore` / `contextAfter` — 40 chars on either side
 
-When a document is republished, the server re-anchors each thread against the new rendered text using exact quote/context matching, whitespace-normalized matching, then a conservative fuzzy fallback. It updates `startIdx`/`length` but keeps the original quote and context as an audit trail. If the text is gone, the anchor gets `stale: true` and `staleSince`; the viewer shows a **text changed** badge instead of silently dropping the highlight. Reviewers can re-attach the thread to newly selected text, which moves the old anchor into `previousAnchors`. For markdown, anchors index into the *rendered* text (the same text `GET /api/file/html?path=doc.md` returns), not the raw markdown source.
+When a document is republished, the server re-anchors each thread against the new rendered text using exact quote/context matching, whitespace-normalized matching, then a conservative fuzzy fallback. It updates `startIdx`/`length` but keeps the original quote and context as an audit trail. If the text is gone, the anchor gets `stale: true` and `staleSince`; the viewer shows a **text changed** badge instead of silently dropping the highlight. Reviewers can re-attach the thread to newly selected text, which moves the old anchor into `previousAnchors`. For markdown, anchors index into the rendered text; for JSON and JSONL, they index into the displayed source text.
 
 **Image** comments are anchored to a rectangular region, stored as fractions of the image size:
 
@@ -127,14 +128,14 @@ Files are identified by their extension-free doc path relative to the served roo
 | --- | --- | --- |
 | `GET` | `/health` | Liveness check, returns `{ "ok": true }` (also served un-prefixed at the root when `BASE_PATH` is set) |
 | `GET` | `/api/root` | Absolute path of the served root + configured `basePath` |
-| `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`image`) and comment counts |
+| `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`json`/`image`) and comment counts |
 | `GET` | `/api/documents?status=open\|resolved\|uncommented\|all&limit=50` | Flat, bounded agent inbox with total count; defaults to documents with open comments |
 | `GET` | `/api/agent/home` | Compact dashboard with document, open-review, and queued-review counts |
 | `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Comment/review kinds include `created`, `replied`, `resolved`, `unresolved`, `deleted`, `restored`, `reattached`, and `queued`; republishing can add `anchors_rewritten` / `anchors_orphaned` events with counts. File kinds include `uploaded`, `removed`, `moved`, `archived`, `unarchived`, and `shared`. Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
 | `GET` | `/api/file?path=...` | File metadata (incl. `kind`) + active comments (soft-deleted comments are excluded) |
-| `GET` | `/api/file/html?path=...` | The raw HTML; for markdown, the *rendered* HTML (the text anchors index into) |
-| `GET` | `/raw/<file>` | The file as-is, by real filename (use this for markdown source / image bytes / sibling assets) |
-| `GET` | `/render/<path>` | Markdown rendered as a standalone HTML page (what the viewer's iframe shows) |
+| `GET` | `/api/file/html?path=...` | The raw HTML; for markdown and JSON/JSONL, the rendered HTML that text anchors index into |
+| `GET` | `/raw/<file>` | The file as-is, by real filename (use this for markdown/JSON source, image bytes, or sibling assets) |
+| `GET` | `/render/<path>` | Markdown or escaped JSON/JSONL rendered as a standalone HTML page (what the viewer's iframe shows) |
 
 ### Sharing
 
@@ -150,7 +151,7 @@ Documents restricted via sharing return 404 on every route (tree, file, comments
 | Method | Path | Body | Description |
 | --- | --- | --- | --- |
 | `GET` | `/api/file/comments?path=...&status=open\|resolved\|all\|deleted` | — | List comments. `all` still excludes soft-deleted threads; use `deleted` for the trash view. |
-| `POST` | `/api/file/comments?path=...` | `{ anchor, text, author? }` — anchor is `{ startIdx, length, quote?, contextBefore?, contextAfter? }` for html/markdown or `{ x, y, w, h, imageWidth?, imageHeight? }` for images | Create a comment |
+| `POST` | `/api/file/comments?path=...` | `{ anchor, text, author? }` — anchor is `{ startIdx, length, quote?, contextBefore?, contextAfter? }` for HTML/markdown/JSON or `{ x, y, w, h, imageWidth?, imageHeight? }` for images | Create a comment |
 | `POST` | `/api/file/comments/:cid/replies?path=...` | `{ text, author? }` | Reply on a thread |
 | `POST` | `/api/file/comments/:cid/complete?path=...` | `{ text, author? }` | Atomically reply and resolve—the normal agent completion action |
 | `PATCH` | `/api/file/comments/:cid?path=...` | `{ resolved?: boolean, text?: string, anchor?: object, deleted?: false }` | Resolve/edit, manually re-attach with a replacement anchor, or restore a soft-deleted thread with `{ "deleted": false }` |
@@ -328,4 +329,4 @@ Pages render inside an `<iframe sandbox="allow-same-origin allow-scripts allow-p
 
 Per-document sharing is an access-control layer *on top of* the deployment's auth, not a replacement for it: it's only as trustworthy as the identity header your proxy sets, and it does nothing on deployments where requests can reach the app without one.
 
-Paths are validated to stay within the configured root. The file API serves `.html`/`.htm`, markdown, and image files; sibling assets (images, CSS, etc.) referenced by relative URLs are served from `/raw/<path>` under the same root, with the same traversal protection. The comment store (comment JSON, `permissions.json`, the event log) is never reachable over HTTP — every path resolver refuses anything inside `COMMENTS_DIR` by location, wherever it's configured to live, so sharing state can only be read or changed through the permissions API and its identity/ownership checks. Direct access to the store requires filesystem access to the pod or its comments volume, which the deployment should treat as operator-only.
+Paths are validated to stay within the configured root. The file API serves `.html`/`.htm`, markdown, JSON/JSONL, and image files; sibling assets (images, CSS, etc.) referenced by relative URLs are served from `/raw/<path>` under the same root, with the same traversal protection. The comment store (comment JSON, `permissions.json`, the event log) is never reachable over HTTP — every path resolver refuses anything inside `COMMENTS_DIR` by location, wherever it's configured to live, so sharing state can only be read or changed through the permissions API and its identity/ownership checks. Direct access to the store requires filesystem access to the pod or its comments volume, which the deployment should treat as operator-only.
