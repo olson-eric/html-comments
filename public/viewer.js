@@ -283,7 +283,7 @@ async function bootstrap() {
   lastCommentsEtag = JSON.stringify(state.comments);
   lastDocModifiedAt = state.meta.modifiedAt;
   document.getElementById('page-title').textContent = state.meta.title;
-  renderBreadcrumb();
+  await renderBreadcrumb();
   document.title = `${state.meta.title} — html-comments`;
 
   if (isImageDoc()) {
@@ -668,7 +668,14 @@ function injectFrameHooks() {
       if (href && !href.startsWith('#')) {
         e.preventDefault();
         const url = link.href; // resolved absolute URL
-        if (url) window.open(url, '_blank', 'noopener,noreferrer');
+        const docPath = url && documentPathForLink(url, location.origin, appRoot, treeCache);
+        if (docPath) {
+          const viewerUrl = new URL(`v/${encodePath(docPath)}`, document.baseURI).toString();
+          if (e.metaKey || e.ctrlKey) window.open(viewerUrl, '_blank', 'noopener,noreferrer');
+          else location.assign(viewerUrl);
+        } else if (url) {
+          window.open(url, '_blank', 'noopener,noreferrer');
+        }
         return;
       }
     }
