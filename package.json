@@ -1,7 +1,7 @@
 {
   "name": "html-comments",
   "version": "0.1.0",
-  "description": "Render a directory of HTML, markdown, JSON, and image files with Google-Docs-style inline comments. Comes with a JSON API for agents to read, reply, and resolve.",
+  "description": "Render HTML, markdown, JSON, PDF, and image files with Google-Docs-style inline comments and an agent API.",
   "main": "server.js",
   "bin": {
     "html-comments": "cli.js"
@@ -29,7 +29,7 @@
     "inline-comments"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20.16"
   },
   "repository": {
     "type": "git",
@@ -41,6 +41,7 @@
   "homepage": "https://github.com/olson-eric/html-comments#readme",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "pdfjs-dist": "^5.4.149"
   }
 }

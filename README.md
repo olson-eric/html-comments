@@ -1,6 +1,6 @@
 # html-comments
 
-Point this service at a directory of `.html`, `.md`, `.json`, `.jsonl`, and image files and get a browser for them with Google-Docs-style inline commenting. Reviewers leave comments by selecting text (or drawing a box on an image); an agent reads/replies/resolves comments through a JSON API.
+Point this service at a directory of `.html`, `.md`, `.json`, `.jsonl`, PDF, and image files and get a browser for them with Google-Docs-style inline commenting. Reviewers leave comments by selecting text or drawing a box on an image or PDF page; an agent reads/replies/resolves comments through a JSON API.
 
 Built for reviewing artifacts produced by coding agents — design docs, feature mockups, workflow diagrams, UI screenshots, etc.
 
@@ -9,6 +9,7 @@ Supported file kinds:
 - **HTML** (`.html`, `.htm`) — rendered as-is in a sandboxed iframe.
 - **Markdown** (`.md`, `.markdown`) — rendered to HTML server-side (headings, lists, tables, code blocks, images, links). Comment anchoring works exactly like HTML: select rendered text.
 - **JSON and JSONL** (`.json`, `.jsonl`) — shown as escaped, monospaced source text. Select any text to anchor a comment to its exact source range.
+- **PDF** (`.pdf`) — rendered page by page; comments are anchored to rectangular regions you draw on a specific page.
 - **Images** (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.avif`, `.bmp`) — shown full-size; comments are anchored to rectangular regions you draw by dragging on the image.
 - **Images inside HTML** — drag a rectangular region directly on any inline `<img>` to comment on that part of the image.
 
@@ -20,13 +21,13 @@ cd html-comments && npm install
 npx html-comments serve /path/to/your/html
 ```
 
-Then open `http://localhost:4747` and you'll see a file tree. Click a file to open it in the viewer, select text (or drag a box on an image), and leave comments.
+Then open `http://localhost:4747` and you'll see a file tree. Click a file to open it in the viewer, select text or drag a box on an image/PDF page, and leave comments.
 
 ## URLs
 
 Every file is addressed by an **extension-free doc path**: `docs/spec.html` lives at `/v/docs/spec`. That's the URL the viewer uses and the one **Copy link** puts on your clipboard, so a pasted link never carries a file extension — an agent given `…/v/shots/screen` knows it's looking at a page in this service (comments, anchors, the JSON API) rather than mistaking the link for a bare `.png` to fetch or upload. Old-style `/v?path=docs/spec.html` links redirect to the new form.
 
-If two sibling files differ only by extension (`spec.html` and `spec.md`), the extension-free path resolves by kind priority (`.html`, `.htm`, `.md`, `.markdown`, `.json`, `.jsonl`, then image extensions); the other file keeps its full name as its path and stays reachable that way.
+If two sibling files differ only by extension (`spec.html` and `spec.md`), the extension-free path resolves by kind priority (`.html`, `.htm`, `.md`, `.markdown`, `.json`, `.jsonl`, `.pdf`, then image extensions); the other file keeps its full name as its path and stays reachable that way.
 
 To host the app under a URL prefix (e.g. behind a shared cloud gateway or an S3-backed deployment where each project mounts at its own subpath), set `BASE_PATH=/some/prefix` — every page, API route, and asset is served under it, and the frontend uses only relative URLs so links keep working wherever the app is mounted.
 
@@ -34,7 +35,7 @@ Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, has
 
 ## Publishing from the browser
 
-With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or drag in `.html`/`.md`/`.json`/`.jsonl`/image files (multi-select works), choose a destination folder, and they're published instantly — made an artifact in Claude and want comments on it? Download it and upload it here, then share the link. Uploading to an existing name updates that page in place: the link and every comment thread stay put, so this is also how you ship a revision. The UI confirms before replacing files.
+With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or drag in `.html`/`.md`/`.json`/`.jsonl`/`.pdf`/image files (multi-select works), choose a destination folder, and they're published instantly — made an artifact in Claude and want comments on it? Download it and upload it here, then share the link. Uploading to an existing name updates that page in place: the link and every comment thread stay put, so this is also how you ship a revision. The UI confirms before replacing files.
 
 When `TRUST_IDENTITY_HEADER` is configured, the destination is prefilled with your personal folder, derived from your signed-in identity (`eric.olson@corp.com` → `eric_olson/`). Nothing is created at login — the folder appears with your first upload.
 
@@ -91,6 +92,8 @@ When a document is republished, the server re-anchors each thread against the ne
 
 For an image inline in HTML, the anchor also includes `imageSrc`, `imageIndex`, and `imageOccurrence`, which let the viewer find the same `<img>` when the artifact is reopened or surrounding markup changes.
 
+**PDF** comments use the same normalized rectangular coordinates and also store `pageNumber`, `pageWidth`, and `pageHeight`. The page number identifies the rendered page, while the dimensions record its original PDF point size for agents that need to convert the region to page coordinates.
+
 Comments are stored in `<html-dir>/.html-comments/<sha1-of-relpath>.json`, separate from your source files — the served directory is never written to.
 
 ## Agent API
@@ -133,7 +136,7 @@ Files are identified by their extension-free doc path relative to the served roo
 | --- | --- | --- |
 | `GET` | `/health` | Liveness check, returns `{ "ok": true }` (also served un-prefixed at the root when `BASE_PATH` is set) |
 | `GET` | `/api/root` | Absolute path of the served root + configured `basePath` |
-| `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`json`/`image`) and comment counts |
+| `GET` | `/api/tree` | Recursive tree of supported files, each with `path` (doc path), `file` (real filename), `kind` (`html`/`markdown`/`json`/`pdf`/`image`) and comment counts |
 | `GET` | `/api/documents?status=open\|resolved\|uncommented\|all&limit=50` | Flat, bounded agent inbox with total count; defaults to documents with open comments |
 | `GET` | `/api/agent/home` | Compact dashboard with document, open-review, and queued-review counts |
 | `GET` | `/api/updates?since=<ISO>` | Recent activity across all files, oldest first: `{ now, events: [{ at, kind, path, file, commentId?, author? }] }`. Comment/review kinds include `created`, `replied`, `resolved`, `unresolved`, `deleted`, `restored`, `reattached`, and `queued`; republishing can add `anchors_rewritten` / `anchors_orphaned` events with counts. File kinds include `uploaded`, `removed`, `moved`, `archived`, `unarchived`, and `shared`. Omit `since` for everything retained (the log is capped at the most recent ~500 events). |
@@ -156,7 +159,7 @@ Documents restricted via sharing return 404 on every route (tree, file, comments
 | Method | Path | Body | Description |
 | --- | --- | --- | --- |
 | `GET` | `/api/file/comments?path=...&status=open\|resolved\|all\|deleted` | — | List comments. `all` still excludes soft-deleted threads; use `deleted` for the trash view. |
-| `POST` | `/api/file/comments?path=...` | `{ anchor, text, author? }` — anchor is `{ startIdx, length, quote?, contextBefore?, contextAfter? }` for text or `{ x, y, w, h, imageWidth?, imageHeight?, imageSrc?, imageIndex?, imageOccurrence? }` for image regions | Create a comment |
+| `POST` | `/api/file/comments?path=...` | `{ anchor, text, author? }` — anchor is `{ startIdx, length, quote?, contextBefore?, contextAfter? }` for text or `{ x, y, w, h, pageNumber?, pageWidth?, pageHeight?, imageWidth?, imageHeight?, imageSrc?, imageIndex?, imageOccurrence? }` for PDF/image regions | Create a comment |
 | `POST` | `/api/file/comments/:cid/replies?path=...` | `{ text, author? }` | Reply on a thread |
 | `POST` | `/api/file/comments/:cid/complete?path=...` | `{ text, author? }` | Atomically reply and resolve—the normal agent completion action |
 | `PATCH` | `/api/file/comments/:cid?path=...` | `{ resolved?: boolean, text?: string, anchor?: object, deleted?: false }` | Resolve/edit, manually re-attach with a replacement anchor, or restore a soft-deleted thread with `{ "deleted": false }` |
@@ -334,4 +337,4 @@ Pages render inside an `<iframe sandbox="allow-same-origin allow-scripts allow-p
 
 Per-document sharing is an access-control layer *on top of* the deployment's auth, not a replacement for it: it's only as trustworthy as the identity header your proxy sets, and it does nothing on deployments where requests can reach the app without one.
 
-Paths are validated to stay within the configured root. The file API serves `.html`/`.htm`, markdown, JSON/JSONL, and image files; sibling assets (images, CSS, etc.) referenced by relative URLs are served from `/raw/<path>` under the same root, with the same traversal protection. The comment store (comment JSON, `permissions.json`, the event log) is never reachable over HTTP — every path resolver refuses anything inside `COMMENTS_DIR` by location, wherever it's configured to live, so sharing state can only be read or changed through the permissions API and its identity/ownership checks. Direct access to the store requires filesystem access to the pod or its comments volume, which the deployment should treat as operator-only.
+Paths are validated to stay within the configured root. The file API serves `.html`/`.htm`, markdown, JSON/JSONL, PDF, and image files; sibling assets (images, CSS, etc.) referenced by relative URLs are served from `/raw/<path>` under the same root, with the same traversal protection. The comment store (comment JSON, `permissions.json`, the event log) is never reachable over HTTP — every path resolver refuses anything inside `COMMENTS_DIR` by location, wherever it's configured to live, so sharing state can only be read or changed through the permissions API and its identity/ownership checks. Direct access to the store requires filesystem access to the pod or its comments volume, which the deployment should treat as operator-only.

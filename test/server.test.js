@@ -19,6 +19,7 @@ fs.writeFileSync(path.join(ROOT, 'docs', 'spec.md'), '# Spec (markdown twin)\n')
 fs.writeFileSync(path.join(ROOT, 'notes.md'), '# Notes\n\nsome notes\n');
 fs.writeFileSync(path.join(ROOT, 'data.json'), '{"message":"<select this>"}\n');
 fs.writeFileSync(path.join(ROOT, 'events.jsonl'), '{"id":1}\n{"id":2}\n');
+fs.writeFileSync(path.join(ROOT, 'review.pdf'), '%PDF-1.4\n%%EOF\n');
 // 1x1 transparent PNG
 fs.writeFileSync(
   path.join(ROOT, 'shots', 'screen.png'),
@@ -46,13 +47,15 @@ test('resolveFile still accepts real paths; shadowed twin keeps its extension', 
   assert.strictEqual(md.doc, 'docs/spec.md');
 });
 
-test('resolveFile handles markdown, JSON, JSONL, and images without extension', () => {
+test('resolveFile handles markdown, JSON, JSONL, PDFs, and images without extension', () => {
   assert.strictEqual(resolveFile('notes').rel, 'notes.md');
   assert.strictEqual(resolveFile('notes').doc, 'notes');
   assert.strictEqual(resolveFile('data').kind, 'json');
   assert.strictEqual(resolveFile('data').rel, 'data.json');
   assert.strictEqual(resolveFile('events').kind, 'json');
   assert.strictEqual(resolveFile('events').rel, 'events.jsonl');
+  assert.strictEqual(resolveFile('review').kind, 'pdf');
+  assert.strictEqual(resolveFile('review').rel, 'review.pdf');
   const img = resolveFile('shots/screen');
   assert.strictEqual(img.rel, 'shots/screen.png');
   assert.strictEqual(img.kind, 'image');
@@ -202,6 +205,32 @@ test('HTTP routes', async (t) => {
     const meta = await (await fetch(`${base}/api/file?path=events`)).json();
     assert.strictEqual(meta.kind, 'json');
     assert.strictEqual(meta.path, 'events');
+  });
+
+  await t.test('PDFs are served raw and PDF.js assets are available locally', async () => {
+    const meta = await (await fetch(`${base}/api/file?path=review`)).json();
+    assert.strictEqual(meta.kind, 'pdf');
+    assert.strictEqual(meta.path, 'review');
+    assert.strictEqual(meta.file, 'review.pdf');
+
+    const raw = await fetch(`${base}/raw/review.pdf`);
+    assert.strictEqual(raw.status, 200);
+    assert.match(raw.headers.get('content-type'), /^application\/pdf/);
+
+    const pdfjs = await fetch(`${base}/vendor/pdfjs/pdf.mjs`);
+    assert.strictEqual(pdfjs.status, 200);
+    assert.match(await pdfjs.text(), /GlobalWorkerOptions/);
+  });
+
+  await t.test('PDF comments preserve page-specific region anchors', async () => {
+    const anchor = { type: 'region', pageNumber: 2, pageWidth: 612, pageHeight: 792, x: 0.1, y: 0.2, w: 0.3, h: 0.4 };
+    const res = await fetch(`${base}/api/file/comments?path=review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor, text: 'Check this PDF region', author: 'reviewer' }),
+    });
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual((await res.json()).anchor, anchor);
   });
 });
 
