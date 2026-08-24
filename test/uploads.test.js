@@ -101,6 +101,25 @@ test('upload API', async (t) => {
     assert.strictEqual(after.comments[0].text, 'nice');
   });
 
+  await t.test('inline image region anchors preserve image identity', async () => {
+    await fetch(`${base}/api/upload/docs/inline-image.html`, {
+      method: 'PUT',
+      body: '<html><body><img src="chart.png" alt="Chart"></body></html>',
+    });
+    const anchor = {
+      type: 'region', x: 0.1, y: 0.2, w: 0.3, h: 0.4,
+      imageSrc: 'chart.png', imageIndex: 0, imageOccurrence: 0,
+      imageWidth: 800, imageHeight: 600,
+    };
+    const created = await fetch(`${base}/api/file/comments?path=docs/inline-image`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor, text: 'Move this data label' }),
+    });
+    assert.strictEqual(created.status, 200);
+    assert.deepEqual((await created.json()).anchor, anchor);
+  });
+
   await t.test('republish re-anchors exact, repeated, fuzzy, and deleted text', async () => {
     const makeDoc = async (name, text) => {
       await fetch(`${base}/api/upload/anchors/${name}.html`, {
