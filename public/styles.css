@@ -124,6 +124,7 @@ button.theme-toggle {
 
 .copy-link-wrap { position: relative; }
 .share-wrap { position: relative; }
+.export-wrap { position: relative; }
 .share-wrap[hidden] { display: none; }
 .share-popover { width: 280px; }
 .copy-link-popover label.share-option {
@@ -208,6 +209,39 @@ button.theme-toggle {
 .copy-link-popover #copy-link-confirm {
   align-self: flex-end;
   font-size: 0.85rem;
+}
+.export-menu[hidden] { display: none; }
+.export-menu {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 20;
+  width: 150px;
+  padding: 0.3rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.export-menu a,
+.export-menu button {
+  display: block;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+.export-menu a:hover,
+.export-menu button:hover {
+  background: var(--row-hover);
+  filter: none;
+  text-decoration: none;
 }
 
 /* Home */

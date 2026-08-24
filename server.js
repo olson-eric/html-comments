@@ -1435,6 +1435,7 @@ router.get(/^\/raw\/(.+)$/, (req, res) => {
   // no permissions; anything that IS a doc kind gets the same gate as the
   // rest of the API so restricted pages can't be fetched by real filename.
   if (fileKind(f.rel) && !canRead(req, f.rel)) return res.status(404).send('not found');
+  if (req.query.download === '1') return res.download(f.abs, path.basename(f.rel));
   res.sendFile(f.abs);
 });
 

@@ -70,6 +70,57 @@ const copyLinkNameInput = document.getElementById('copy-link-name');
 const copyLinkConfirmBtn = document.getElementById('copy-link-confirm');
 let copyResetTimer = null;
 
+const exportBtn = document.getElementById('export-btn');
+const exportMenu = document.getElementById('export-menu');
+const exportRaw = document.getElementById('export-raw');
+const exportPdf = document.getElementById('export-pdf');
+
+exportBtn.addEventListener('click', () => {
+  const opening = exportMenu.hidden;
+  exportMenu.hidden = !opening;
+  exportBtn.setAttribute('aria-expanded', String(opening));
+  if (opening) exportMenu.querySelector('[role="menuitem"]').focus();
+});
+
+exportRaw.addEventListener('click', closeExportMenu);
+exportPdf.addEventListener('click', exportToPdf);
+
+document.addEventListener('click', (e) => {
+  if (!exportMenu.hidden && !e.target.closest('.export-wrap')) closeExportMenu();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !exportMenu.hidden) {
+    closeExportMenu();
+    exportBtn.focus();
+  }
+});
+
+function closeExportMenu() {
+  exportMenu.hidden = true;
+  exportBtn.setAttribute('aria-expanded', 'false');
+}
+
+function exportToPdf() {
+  closeExportMenu();
+  const printWindow = window.open(docUrl(), '_blank');
+  if (!printWindow) {
+    flash('Allow pop-ups to export this artifact as PDF');
+    return;
+  }
+  printWindow.addEventListener('load', () => {
+    // Browser image documents otherwise print at their intrinsic size. Keep
+    // large image artifacts within the printable page while preserving ratio.
+    if (isImageDoc()) {
+      const style = printWindow.document.createElement('style');
+      style.textContent = '@page { margin: 0.5in; } body { margin: 0; text-align: center; } img { max-width: 100%; height: auto; }';
+      printWindow.document.head.appendChild(style);
+    }
+    printWindow.focus();
+    printWindow.print();
+  }, { once: true });
+}
+
 // Split button: the main button copies the link as-is; the arrow opens a
 // popover to address the link to a specific recipient.
 copyLinkBtn.addEventListener('click', () => {
@@ -282,6 +333,9 @@ async function bootstrap() {
   state.comments = state.meta.comments || [];
   lastCommentsEtag = JSON.stringify(state.comments);
   lastDocModifiedAt = state.meta.modifiedAt;
+  exportRaw.href = `raw/${encodePath(state.meta.file)}?download=1`;
+  exportRaw.download = state.meta.name;
+  exportBtn.disabled = false;
   document.getElementById('page-title').textContent = state.meta.title;
   await renderBreadcrumb();
   document.title = `${state.meta.title} — html-comments`;

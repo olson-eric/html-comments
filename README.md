@@ -40,6 +40,8 @@ When `TRUST_IDENTITY_HEADER` is configured, the destination is prefilled with yo
 
 Hovering a row in the file tree shows two more actions: **rename/move** (✎ — old links redirect to the new location, comments come along) and **archive** (🗄 — hides the file behind a "Show archived" toggle without touching its link or comments; unarchive puts it back).
 
+Every viewer also has an **Export** menu. **Raw file** downloads the original artifact unchanged; **PDF…** opens the artifact's rendered view and the browser print dialog, where you can choose **Save as PDF**. Both options work for HTML, Markdown, JSON/JSONL, and image artifacts.
+
 ## Sharing
 
 On deployments with a verified identity (`TRUST_IDENTITY_HEADER`, see below), every document can be shared at one of three levels:
