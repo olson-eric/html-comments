@@ -8,13 +8,13 @@ const { resolveAnchor } = require('./public/anchor-resolver.js');
 
 const argv = process.argv.slice(2);
 if (argv.includes('--help') || argv.includes('-h')) {
-  console.log(`html-comments — render HTML, markdown, JSON, and images with inline comments
+  console.log(`html-comments — render HTML, markdown, JSON, PDFs, and images with inline comments
 
 Usage:
   html-comments [<html-dir>]
 
 Options:
-  <html-dir>            Directory of .html/.md/.json/.jsonl/image files to serve (default: ./html)
+  <html-dir>            Directory of .html/.md/.json/.jsonl/.pdf/image files to serve (default: ./html)
 
 Environment:
   HTML_DIR              Same as positional arg
@@ -145,11 +145,12 @@ const KIND_PATTERNS = [
   ['html', /\.html?$/i],
   ['markdown', /\.(md|markdown)$/i],
   ['json', /\.(json|jsonl)$/i],
+  ['pdf', /\.pdf$/i],
   ['image', /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i],
 ];
 
 // Priority order for resolving an extension-free doc path to a file.
-const EXTENSIONS = ['.html', '.htm', '.md', '.markdown', '.json', '.jsonl', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.bmp'];
+const EXTENSIONS = ['.html', '.htm', '.md', '.markdown', '.json', '.jsonl', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.bmp'];
 
 function fileKind(name) {
   for (const [kind, re] of KIND_PATTERNS) {
@@ -968,7 +969,9 @@ router.get('/api/file/html', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).send('not found');
   if (!canRead(req, f.rel)) return res.status(404).send('not found');
-  if (f.kind === 'image') return res.status(400).json({ error: 'not renderable as html; fetch via /raw/' });
+  if (['image', 'pdf'].includes(f.kind)) {
+    return res.status(400).json({ error: 'not renderable as html; fetch via /raw/' });
+  }
   if (f.kind === 'markdown') {
     return res.type('text/html; charset=utf-8').send(markdownDocument(f));
   }
@@ -992,9 +995,9 @@ router.get('/api/file/comments', (req, res) => {
 });
 
 // Two anchor shapes: text anchors ({startIdx, length, quote, context*}) and
-// region anchors ({x, y, w, h} as fractions of an image). Regions on an image
-// document need no identity; regions on an inline HTML image also record its
-// source and position so the viewer can find it again.
+// region anchors ({x, y, w, h} as fractions of an image or PDF page). PDF
+// regions include a page number; regions on an inline HTML image also record
+// its source and position so the viewer can find it again.
 function normalizeAnchor(anchor) {
   const nums = ['x', 'y', 'w', 'h'];
   if (nums.every((k) => typeof anchor[k] === 'number' && Number.isFinite(anchor[k]))) {
@@ -1002,6 +1005,9 @@ function normalizeAnchor(anchor) {
     const region = { type: 'region', x: clamp(anchor.x), y: clamp(anchor.y), w: clamp(anchor.w), h: clamp(anchor.h) };
     if (Number.isFinite(anchor.imageWidth)) region.imageWidth = Math.round(anchor.imageWidth);
     if (Number.isFinite(anchor.imageHeight)) region.imageHeight = Math.round(anchor.imageHeight);
+    if (Number.isInteger(anchor.pageNumber) && anchor.pageNumber > 0) region.pageNumber = anchor.pageNumber;
+    if (Number.isFinite(anchor.pageWidth) && anchor.pageWidth > 0) region.pageWidth = anchor.pageWidth;
+    if (Number.isFinite(anchor.pageHeight) && anchor.pageHeight > 0) region.pageHeight = anchor.pageHeight;
     if (typeof anchor.imageSrc === 'string') region.imageSrc = anchor.imageSrc;
     if (Number.isInteger(anchor.imageIndex) && anchor.imageIndex >= 0) region.imageIndex = anchor.imageIndex;
     if (Number.isInteger(anchor.imageOccurrence) && anchor.imageOccurrence >= 0) region.imageOccurrence = anchor.imageOccurrence;
@@ -1030,7 +1036,7 @@ router.post('/api/file/comments', (req, res) => {
   const stored = normalizeAnchor(anchor);
   if (!stored) {
     return res.status(400).json({
-      error: 'anchor must have startIdx+length (text) or x/y/w/h in 0..1 (image region)',
+      error: 'anchor must have startIdx+length (text) or x/y/w/h in 0..1 (PDF/image region)',
     });
   }
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
@@ -1233,7 +1239,7 @@ router.put(
     const target = resolveUploadTarget(rel);
     if (!target) {
       return res.status(400).json({
-        error: 'invalid upload path: must stay inside the served root, contain no hidden segments, and end in a supported extension (.html/.htm/.md/.markdown/.json/.jsonl or an image type)',
+        error: 'invalid upload path: must stay inside the served root, contain no hidden segments, and end in a supported extension (.html/.htm/.md/.markdown/.json/.jsonl/.pdf or an image type)',
       });
     }
     // The permissions entry outlives the file (like its comment store), so a
@@ -1452,6 +1458,9 @@ router.get(/^\/render\/(.+)$/, (req, res) => {
   if (!canRead(req, f.rel)) return res.status(404).send('not found');
   res.type('text/html; charset=utf-8').send(f.kind === 'markdown' ? markdownDocument(f) : jsonDocument(f));
 });
+
+// PDF.js is loaded locally so PDF review works offline and under BASE_PATH.
+router.use('/vendor/pdfjs', express.static(path.join(__dirname, 'node_modules', 'pdfjs-dist', 'build'), { index: false }));
 
 router.use(express.static(path.join(__dirname, 'public'), { index: false }));
 

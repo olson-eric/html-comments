@@ -60,7 +60,7 @@ async function loadTree() {
     if (!tree.children.length) {
       const empty = document.createElement('p');
       empty.className = 'muted';
-      empty.textContent = 'No .html, .md, .json, .jsonl, or image files found in this directory.';
+      empty.textContent = 'No .html, .md, .json, .jsonl, .pdf, or image files found in this directory.';
       container.appendChild(empty);
       return;
     }
@@ -165,7 +165,7 @@ function renderNode(node, depth) {
       : node.commentCount > 0
         ? `<span class="badge badge-resolved" title="${node.commentCount} comment(s), all resolved">${node.commentCount}</span>`
         : '';
-    const icon = { html: '📄', markdown: '📝', json: '🔢', image: '🖼️' }[node.kind] || '📄';
+    const icon = { html: '📄', markdown: '📝', json: '🔢', pdf: '📕', image: '🖼️' }[node.kind] || '📄';
     if (node.archived) a.classList.add('archived');
     // The server only returns docs this viewer can read; the lock just marks
     // ones that are restricted (private to you, or shared with a list).
