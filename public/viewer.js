@@ -654,13 +654,26 @@ function injectFrameHooks() {
     svg .hc-highlight { fill: #6b4a00; stroke: rgba(255, 213, 79, 0.9); stroke-width: 3px; paint-order: stroke; stroke-linejoin: round; }
     svg .hc-highlight.hc-resolved { fill: inherit; stroke: rgba(150, 150, 150, 0.45); }
     svg .hc-highlight.hc-active { stroke: rgba(255, 152, 0, 0.9); }
+    img { cursor: crosshair; }
+    .hc-image-region { position: fixed; z-index: 2147483646; box-sizing: border-box; border: 2px solid rgba(255, 152, 0, 0.9); background: rgba(255, 213, 79, 0.25); border-radius: 2px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+    .hc-image-region:hover { background: rgba(255, 213, 79, 0.4); }
+    .hc-image-region.hc-resolved { border-color: rgba(130, 130, 130, 0.55); background: rgba(200, 200, 200, 0.15); }
+    .hc-image-region.hc-active { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2); background: rgba(255, 213, 79, 0.35); }
+    .hc-image-region-draft { position: fixed; z-index: 2147483647; box-sizing: border-box; border: 2px dashed #2563eb; background: rgba(37, 99, 235, 0.12); pointer-events: none; }
     body { padding-bottom: 4rem; }
   `;
   doc.head && doc.head.appendChild(style);
 
+  setupInlineImageComments(doc);
   doc.addEventListener('mouseup', onFrameSelection);
   doc.addEventListener('keyup', onFrameSelection);
   doc.addEventListener('click', (e) => {
+    if (suppressInlineImageClick) {
+      suppressInlineImageClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     const link = e.target.closest && e.target.closest('a[href]');
     if (link) {
       const href = link.getAttribute('href');
@@ -687,6 +700,77 @@ function injectFrameHooks() {
       setActiveComment(null);
     }
   });
+}
+
+let suppressInlineImageClick = false;
+
+function setupInlineImageComments(doc) {
+  let drag = null;
+
+  doc.addEventListener('dragstart', (e) => {
+    if (e.target.closest && e.target.closest('img')) e.preventDefault();
+  });
+  doc.addEventListener('mousedown', (e) => {
+    const image = e.target.closest && e.target.closest('img');
+    if (e.button !== 0 || !image) return;
+    const rect = image.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    popover.hidden = true;
+    clearDraftRegion();
+    drag = { image, x0: e.clientX - rect.left, y0: e.clientY - rect.top, rect };
+  });
+  doc.addEventListener('mousemove', (e) => {
+    if (!drag) return;
+    const box = dragBox(drag, e);
+    if (!draftRegionEl) {
+      e.preventDefault();
+      draftRegionEl = doc.createElement('div');
+      draftRegionEl.className = 'hc-image-region-draft';
+      doc.body.appendChild(draftRegionEl);
+    }
+    positionInlineRegion(draftRegionEl, drag.image, box);
+  });
+  doc.addEventListener('mouseup', (e) => {
+    if (!drag) return;
+    const box = dragBox(drag, e);
+    const { image, rect } = drag;
+    drag = null;
+    if (box.w * rect.width < 8 || box.h * rect.height < 8) {
+      clearDraftRegion();
+      return;
+    }
+    e.preventDefault();
+    suppressInlineImageClick = true;
+    setTimeout(() => { suppressInlineImageClick = false; }, 0);
+    positionInlineRegion(draftRegionEl, image, box);
+    const images = Array.from(doc.images);
+    const imageSrc = image.getAttribute('src') || '';
+    state.pendingAnchor = {
+      type: 'region',
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
+      imageSrc,
+      imageIndex: images.indexOf(image),
+      imageOccurrence: images.filter((candidate) => candidate.getAttribute('src') === imageSrc).indexOf(image),
+      imageWidth: image.naturalWidth,
+      imageHeight: image.naturalHeight,
+    };
+    document.getElementById('start-comment').textContent = state.reattachCommentId ? '🔗 Re-attach comment' : '💬 Add comment';
+    const paneRect = document.querySelector('.page-pane').getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    const imageRect = image.getBoundingClientRect();
+    popover.style.left = `${frameRect.left - paneRect.left + imageRect.left + box.x * imageRect.width}px`;
+    popover.style.top = `${frameRect.top - paneRect.top + imageRect.top + (box.y + box.h) * imageRect.height + 6}px`;
+    popover.hidden = false;
+    e.stopImmediatePropagation();
+  });
+  doc.addEventListener('scroll', positionInlineImageHighlights, true);
+  frame.contentWindow.addEventListener('resize', positionInlineImageHighlights);
+  doc.addEventListener('load', (e) => {
+    if (e.target.tagName === 'IMG') renderHighlights();
+  }, true);
 }
 
 // Image mode: the document is a single image shown directly in the pane (no
@@ -768,6 +852,32 @@ function positionRegion(el, box) {
   el.style.top = `${box.y * 100}%`;
   el.style.width = `${box.w * 100}%`;
   el.style.height = `${box.h * 100}%`;
+}
+
+function positionInlineRegion(el, image, box) {
+  const rect = image.getBoundingClientRect();
+  el.style.left = `${rect.left + box.x * rect.width}px`;
+  el.style.top = `${rect.top + box.y * rect.height}px`;
+  el.style.width = `${box.w * rect.width}px`;
+  el.style.height = `${box.h * rect.height}px`;
+}
+
+function inlineImageForAnchor(doc, anchor) {
+  const images = Array.from(doc.images);
+  const indexed = images[anchor.imageIndex];
+  if (indexed && indexed.getAttribute('src') === anchor.imageSrc) return indexed;
+  const matching = images.filter((image) => image.getAttribute('src') === anchor.imageSrc);
+  return matching[anchor.imageOccurrence || 0] || null;
+}
+
+function positionInlineImageHighlights() {
+  const doc = frame.contentDocument;
+  if (!doc) return;
+  for (const el of doc.querySelectorAll('.hc-image-region')) {
+    const comment = state.comments.find((candidate) => candidate.id === el.dataset.commentId);
+    const image = comment && inlineImageForAnchor(doc, comment.anchor);
+    if (image) positionInlineRegion(el, image, comment.anchor);
+  }
 }
 
 function clearDraftRegion() {
@@ -1074,11 +1184,30 @@ function renderHighlights() {
   const doc = frame.contentDocument;
   if (!doc || !doc.body) return;
   clearHighlights();
+  doc.querySelectorAll('.hc-image-region').forEach((el) => el.remove());
   const hideResolved = hideResolvedToggle.checked;
   const fullText = collectText(doc.body);
   const resolved = [];
   for (const c of state.comments) {
     if (hideResolved && c.resolved) continue;
+    if (isRegionAnchor(c.anchor)) {
+      const image = inlineImageForAnchor(doc, c.anchor);
+      c._anchorOrphaned = !image;
+      if (!image) continue;
+      const el = doc.createElement('div');
+      el.className =
+        'hc-image-region' +
+        (c.resolved ? ' hc-resolved' : '') +
+        (c.id === state.activeCommentId ? ' hc-active' : '');
+      el.dataset.commentId = c.id;
+      positionInlineRegion(el, image, c.anchor);
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setActiveComment(c.id, { scrollSidebar: true });
+      });
+      doc.body.appendChild(el);
+      continue;
+    }
     const r = c.anchor.stale ? null : AnchorResolver.resolveAnchor(fullText, c.anchor);
     c._anchorOrphaned = !r;
     if (!r) continue;
@@ -1152,7 +1281,7 @@ function renderSidebar() {
       ? 'No deleted comments.'
       : isImageDoc()
       ? 'No comments yet. Drag a box on the image to add one.'
-      : 'No comments yet. Select text in the page to add one.';
+      : 'No comments yet. Select text, or drag a box on an image, to add one.';
     commentsList.appendChild(empty);
     return;
   }
@@ -1168,7 +1297,7 @@ function renderSidebar() {
 function renderThread(comment) {
   const wrap = document.createElement('div');
   const deleted = !!comment.deletedAt;
-  const orphaned = !isRegionAnchor(comment.anchor) && (comment.anchor.stale || comment._anchorOrphaned);
+  const orphaned = comment.anchor.stale || comment._anchorOrphaned;
   wrap.className = 'thread' + (comment.resolved ? ' resolved' : '') + (orphaned ? ' orphaned' : '') + (deleted ? ' deleted' : '');
   wrap.dataset.threadId = comment.id;
   wrap.addEventListener('click', (e) => {
@@ -1192,7 +1321,9 @@ function renderThread(comment) {
   if (orphaned) {
     const notice = document.createElement('div');
     notice.className = 'orphan-notice';
-    notice.textContent = 'The selected text is no longer in this version of the document, so there is no highlight to show.';
+    notice.textContent = isRegionAnchor(comment.anchor)
+      ? 'The selected image is no longer in this version of the document, so there is no region to show.'
+      : 'The selected text is no longer in this version of the document, so there is no highlight to show.';
     wrap.appendChild(notice);
   }
 
@@ -1241,11 +1372,11 @@ function renderThread(comment) {
     const reattachBtn = document.createElement('button');
     reattachBtn.className = 'secondary';
     reattachBtn.textContent = 'Re-attach';
-    reattachBtn.title = 'Select replacement text in the document';
+    reattachBtn.title = 'Select replacement text or an image region in the document';
     reattachBtn.addEventListener('click', () => {
       state.reattachCommentId = comment.id;
       state.pendingAnchor = null;
-      flash('Select replacement text in the document, then click Re-attach comment.');
+      flash('Select replacement text or drag an image region, then click Re-attach comment.');
       frame.focus();
     });
     actions.appendChild(reattachBtn);
@@ -1281,7 +1412,7 @@ function openReplyBox(threadEl, commentId) {
 }
 
 function anchorSortKey(anchor) {
-  if (isRegionAnchor(anchor)) return anchor.y * 1e6 + anchor.x * 1e3;
+  if (isRegionAnchor(anchor)) return (anchor.imageIndex || 0) * 1e9 + anchor.y * 1e6 + anchor.x * 1e3;
   return anchor && typeof anchor.startIdx === 'number' ? anchor.startIdx : 0;
 }
 
@@ -1299,12 +1430,16 @@ function setActiveComment(commentId, opts = {}) {
   }
   const doc = frame.contentDocument;
   if (doc && !isImageDoc()) {
-    doc.querySelectorAll('.hc-highlight.hc-active').forEach((el) => el.classList.remove('hc-active'));
+    doc.querySelectorAll('.hc-highlight.hc-active, .hc-image-region.hc-active').forEach((el) => el.classList.remove('hc-active'));
     if (commentId) {
-      const target = doc.querySelector(`.hc-highlight[data-comment-id="${commentId}"]`);
+      const target = doc.querySelector(`.hc-highlight[data-comment-id="${commentId}"], .hc-image-region[data-comment-id="${commentId}"]`);
       if (target) {
         target.classList.add('hc-active');
-        if (opts.scrollFrame) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (opts.scrollFrame) {
+          const comment = state.comments.find((candidate) => candidate.id === commentId);
+          const image = comment && isRegionAnchor(comment.anchor) && inlineImageForAnchor(doc, comment.anchor);
+          (image || target).scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
       }
     }
   }
