@@ -10,6 +10,7 @@ Supported file kinds:
 - **Markdown** (`.md`, `.markdown`) — rendered to HTML server-side (headings, lists, tables, code blocks, images, links). Comment anchoring works exactly like HTML: select rendered text.
 - **JSON and JSONL** (`.json`, `.jsonl`) — shown as escaped, monospaced source text. Select any text to anchor a comment to its exact source range.
 - **Images** (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.avif`, `.bmp`) — shown full-size; comments are anchored to rectangular regions you draw by dragging on the image.
+- **Images inside HTML** — drag a rectangular region directly on any inline `<img>` to comment on that part of the image.
 
 ## Quick start
 
@@ -88,6 +89,8 @@ When a document is republished, the server re-anchors each thread against the ne
 
 `x`/`y` are the top-left corner and `w`/`h` the size, all in `0..1` of the image dimensions — so regions stay attached when the image is displayed at any scale, and survive re-exports of the same screenshot at a different resolution. `imageWidth`/`imageHeight` record the image's pixel size at comment time, so an agent can convert to pixel coordinates (`px = x * imageWidth`) and detect when the underlying image's aspect ratio has changed.
 
+For an image inline in HTML, the anchor also includes `imageSrc`, `imageIndex`, and `imageOccurrence`, which let the viewer find the same `<img>` when the artifact is reopened or surrounding markup changes.
+
 Comments are stored in `<html-dir>/.html-comments/<sha1-of-relpath>.json`, separate from your source files — the served directory is never written to.
 
 ## Agent API
@@ -153,7 +156,7 @@ Documents restricted via sharing return 404 on every route (tree, file, comments
 | Method | Path | Body | Description |
 | --- | --- | --- | --- |
 | `GET` | `/api/file/comments?path=...&status=open\|resolved\|all\|deleted` | — | List comments. `all` still excludes soft-deleted threads; use `deleted` for the trash view. |
-| `POST` | `/api/file/comments?path=...` | `{ anchor, text, author? }` — anchor is `{ startIdx, length, quote?, contextBefore?, contextAfter? }` for HTML/markdown/JSON or `{ x, y, w, h, imageWidth?, imageHeight? }` for images | Create a comment |
+| `POST` | `/api/file/comments?path=...` | `{ anchor, text, author? }` — anchor is `{ startIdx, length, quote?, contextBefore?, contextAfter? }` for text or `{ x, y, w, h, imageWidth?, imageHeight?, imageSrc?, imageIndex?, imageOccurrence? }` for image regions | Create a comment |
 | `POST` | `/api/file/comments/:cid/replies?path=...` | `{ text, author? }` | Reply on a thread |
 | `POST` | `/api/file/comments/:cid/complete?path=...` | `{ text, author? }` | Atomically reply and resolve—the normal agent completion action |
 | `PATCH` | `/api/file/comments/:cid?path=...` | `{ resolved?: boolean, text?: string, anchor?: object, deleted?: false }` | Resolve/edit, manually re-attach with a replacement anchor, or restore a soft-deleted thread with `{ "deleted": false }` |
@@ -232,9 +235,9 @@ curl -s http://localhost:4747/api/tree | jq '..|.path? // empty'
 curl -s "http://localhost:4747/api/file/comments?path=docs/spec&status=open" | jq
 
 # Each comment includes anchor.quote (the highlighted text), text (the comment),
-# author, createdAt, replies, resolved. Comments on images have a region anchor
-# instead: { type: "region", x, y, w, h, imageWidth, imageHeight } with x/y/w/h
-# as fractions (0..1) of the image.
+# author, createdAt, replies, resolved. Image comments have a region anchor:
+# { type: "region", x, y, w, h, imageWidth, imageHeight } with x/y/w/h as
+# fractions (0..1) of the image. Inline-image anchors also identify the <img>.
 
 # 3. After acting on a comment, reply + resolve:
 curl -s -X POST "http://localhost:4747/api/file/comments/<cid>/replies?path=docs/spec" \

@@ -991,9 +991,10 @@ router.get('/api/file/comments', (req, res) => {
   res.json({ path: f.doc, file: f.rel, comments });
 });
 
-// Two anchor shapes: text anchors ({startIdx, length, quote, context*}) for
-// HTML, markdown, and JSON; and region anchors ({x, y, w, h} as fractions of
-// the image, plus the image's pixel size at comment time) for images.
+// Two anchor shapes: text anchors ({startIdx, length, quote, context*}) and
+// region anchors ({x, y, w, h} as fractions of an image). Regions on an image
+// document need no identity; regions on an inline HTML image also record its
+// source and position so the viewer can find it again.
 function normalizeAnchor(anchor) {
   const nums = ['x', 'y', 'w', 'h'];
   if (nums.every((k) => typeof anchor[k] === 'number' && Number.isFinite(anchor[k]))) {
@@ -1001,6 +1002,9 @@ function normalizeAnchor(anchor) {
     const region = { type: 'region', x: clamp(anchor.x), y: clamp(anchor.y), w: clamp(anchor.w), h: clamp(anchor.h) };
     if (Number.isFinite(anchor.imageWidth)) region.imageWidth = Math.round(anchor.imageWidth);
     if (Number.isFinite(anchor.imageHeight)) region.imageHeight = Math.round(anchor.imageHeight);
+    if (typeof anchor.imageSrc === 'string') region.imageSrc = anchor.imageSrc;
+    if (Number.isInteger(anchor.imageIndex) && anchor.imageIndex >= 0) region.imageIndex = anchor.imageIndex;
+    if (Number.isInteger(anchor.imageOccurrence) && anchor.imageOccurrence >= 0) region.imageOccurrence = anchor.imageOccurrence;
     return region;
   }
   if (typeof anchor.startIdx === 'number' && typeof anchor.length === 'number') {
