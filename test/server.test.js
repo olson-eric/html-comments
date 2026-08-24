@@ -100,6 +100,13 @@ test('HTTP routes', async (t) => {
     assert.strictEqual(byFile.path, 'docs/spec');
   });
 
+  await t.test('raw export downloads the original file with its real name', async () => {
+    const res = await fetch(`${base}/raw/docs/spec.html?download=1`);
+    assert.strictEqual(res.status, 200);
+    assert.match(res.headers.get('content-disposition'), /^attachment; filename="spec\.html"$/);
+    assert.match(await res.text(), /hello spec/);
+  });
+
   await t.test('viewer serves at /v/<doc-path> and canonicalizes', async () => {
     const ok = await fetch(`${base}/v/docs/spec`);
     assert.strictEqual(ok.status, 200);
