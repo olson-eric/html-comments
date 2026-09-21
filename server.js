@@ -997,11 +997,12 @@ router.get('/api/file/comments', (req, res) => {
 
 // Two anchor shapes: text anchors ({startIdx, length, quote, context*}) and
 // region anchors ({x, y, w, h} as fractions of an image or PDF page). PDF
-// regions include a page number; regions on an inline HTML image also record
+// regions require a page number; regions on an inline HTML image also record
 // its source and position so the viewer can find it again.
-function normalizeAnchor(anchor) {
+function normalizeAnchor(anchor, fileKind) {
   const nums = ['x', 'y', 'w', 'h'];
   if (nums.every((k) => typeof anchor[k] === 'number' && Number.isFinite(anchor[k]))) {
+    if (fileKind === 'pdf' && (!Number.isInteger(anchor.pageNumber) || anchor.pageNumber < 1)) return null;
     const clamp = (v) => Math.max(0, Math.min(1, v));
     const region = { type: 'region', x: clamp(anchor.x), y: clamp(anchor.y), w: clamp(anchor.w), h: clamp(anchor.h) };
     if (Number.isFinite(anchor.imageWidth)) region.imageWidth = Math.round(anchor.imageWidth);
@@ -1014,6 +1015,7 @@ function normalizeAnchor(anchor) {
     if (Number.isInteger(anchor.imageOccurrence) && anchor.imageOccurrence >= 0) region.imageOccurrence = anchor.imageOccurrence;
     return region;
   }
+  if (fileKind === 'pdf') return null;
   if (typeof anchor.startIdx === 'number' && typeof anchor.length === 'number') {
     return {
       startIdx: anchor.startIdx,
@@ -1034,10 +1036,12 @@ router.post('/api/file/comments', (req, res) => {
   if (!requireReadable(req, res, f.rel)) return;
   const { anchor, text, author } = req.body || {};
   if (!anchor || typeof anchor !== 'object') return res.status(400).json({ error: 'anchor required' });
-  const stored = normalizeAnchor(anchor);
+  const stored = normalizeAnchor(anchor, f.kind);
   if (!stored) {
     return res.status(400).json({
-      error: 'anchor must have startIdx+length (text) or x/y/w/h in 0..1 (PDF/image region)',
+      error: f.kind === 'pdf'
+        ? 'PDF anchor must have pageNumber and x/y/w/h region coordinates'
+        : 'anchor must have startIdx+length (text) or x/y/w/h in 0..1 (image region)',
     });
   }
   if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text required' });
@@ -1123,7 +1127,7 @@ router.patch('/api/file/comments/:cid', (req, res) => {
     delete comment.deletedBy;
   }
   if (req.body.anchor && typeof req.body.anchor === 'object') {
-    const anchor = normalizeAnchor(req.body.anchor);
+    const anchor = normalizeAnchor(req.body.anchor, f.kind);
     if (!anchor) return res.status(400).json({ error: 'invalid anchor' });
     comment.previousAnchors = comment.previousAnchors || [];
     comment.previousAnchors.push(comment.anchor);

@@ -231,7 +231,30 @@ test('HTTP routes', async (t) => {
       body: JSON.stringify({ anchor, text: 'Check this PDF region', author: 'reviewer' }),
     });
     assert.strictEqual(res.status, 200);
-    assert.deepStrictEqual((await res.json()).anchor, anchor);
+    const comment = await res.json();
+    assert.deepStrictEqual(comment.anchor, anchor);
+
+    const patch = await fetch(`${base}/api/file/comments/${comment.id}?path=review`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anchor: { type: 'region', x: 0.2, y: 0.2, w: 0.2, h: 0.2 } }),
+    });
+    assert.strictEqual(patch.status, 400);
+  });
+
+  await t.test('PDF comments require a page-specific region anchor', async () => {
+    for (const anchor of [
+      { type: 'region', x: 0.1, y: 0.2, w: 0.3, h: 0.4 },
+      { startIdx: 0, length: 3, quote: 'PDF' },
+    ]) {
+      const res = await fetch(`${base}/api/file/comments?path=review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ anchor, text: 'This anchor cannot be displayed' }),
+      });
+      assert.strictEqual(res.status, 400);
+      assert.match((await res.json()).error, /PDF anchor must have pageNumber/);
+    }
   });
 });
 

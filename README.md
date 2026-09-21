@@ -161,7 +161,7 @@ Documents restricted via sharing return 404 on every route (tree, file, comments
 | Method | Path | Body | Description |
 | --- | --- | --- | --- |
 | `GET` | `/api/file/comments?path=...&status=open\|resolved\|all\|deleted` | — | List comments. `all` still excludes soft-deleted threads; use `deleted` for the trash view. |
-| `POST` | `/api/file/comments?path=...` | `{ anchor, text, author? }` — anchor is `{ startIdx, length, quote?, contextBefore?, contextAfter? }` for text or `{ x, y, w, h, pageNumber?, pageWidth?, pageHeight?, imageWidth?, imageHeight?, imageSrc?, imageIndex?, imageOccurrence? }` for PDF/image regions | Create a comment |
+| `POST` | `/api/file/comments?path=...` | `{ anchor, text, author? }` — anchor is `{ startIdx, length, quote?, contextBefore?, contextAfter? }` for text or `{ x, y, w, h, pageNumber?, pageWidth?, pageHeight?, imageWidth?, imageHeight?, imageSrc?, imageIndex?, imageOccurrence? }` for PDF/image regions; `pageNumber` is required for PDFs | Create a comment |
 | `POST` | `/api/file/comments/:cid/replies?path=...` | `{ text, author? }` | Reply on a thread |
 | `POST` | `/api/file/comments/:cid/complete?path=...` | `{ text, author? }` | Atomically reply and resolve—the normal agent completion action |
 | `PATCH` | `/api/file/comments/:cid?path=...` | `{ resolved?: boolean, text?: string, anchor?: object, deleted?: false }` | Resolve/edit, manually re-attach with a replacement anchor, or restore a soft-deleted thread with `{ "deleted": false }` |

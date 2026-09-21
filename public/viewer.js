@@ -1071,14 +1071,28 @@ function setupImageMode() {
 
 // PDF mode renders pages locally with PDF.js. Comments use page-specific
 // rectangular regions, which remain stable as pages scale to fit the pane.
+// Only pages near the viewport retain a rasterized canvas, keeping long PDFs
+// from consuming memory for every page at once.
 let pdfLoadGeneration = 0;
+let pdfDocument = null;
+let pdfPageObserver = null;
+const pdfPageStates = new Map();
 
 async function setupPdfMode(url = docUrl()) {
   const generation = ++pdfLoadGeneration;
+  if (pdfPageObserver) pdfPageObserver.disconnect();
+  pdfPageObserver = null;
+  for (const state of pdfPageStates.values()) state.renderTask?.cancel();
+  pdfPageStates.clear();
+  if (pdfDocument) pdfDocument.destroy();
+  pdfDocument = null;
   frame.hidden = true;
   imageStage.hidden = true;
   pdfStage.hidden = false;
   pdfPages.innerHTML = '';
+  clearDraftRegion();
+  state.pendingAnchor = null;
+  popover.hidden = true;
   pdfLoading.className = 'pdf-loading';
   pdfLoading.textContent = 'Loading PDF…';
   pdfLoading.hidden = false;
@@ -1094,20 +1108,33 @@ async function setupPdfMode(url = docUrl()) {
       pdf.destroy();
       return;
     }
+    pdfDocument = pdf;
+    pdfPageObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const pageState = pdfPageStates.get(entry.target);
+        if (!pageState) continue;
+        pageState.visible = entry.isIntersecting;
+        if (entry.isIntersecting) renderPdfPage(pageState, generation);
+        else releasePdfPage(pageState);
+      }
+    }, { root: pdfStage, rootMargin: '100% 0px' });
+
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
       const page = await pdf.getPage(pageNumber);
-      if (generation !== pdfLoadGeneration) return;
+      if (generation !== pdfLoadGeneration) {
+        pdf.destroy();
+        return;
+      }
       const viewport = page.getViewport({ scale: 1.5 });
-      const pixelRatio = window.devicePixelRatio || 1;
       const pageEl = document.createElement('div');
       pageEl.className = 'pdf-page';
       pageEl.dataset.pageNumber = String(pageNumber);
       pageEl.style.width = `${viewport.width}px`;
+      pageEl.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
 
       const canvas = document.createElement('canvas');
-      canvas.width = Math.floor(viewport.width * pixelRatio);
-      canvas.height = Math.floor(viewport.height * pixelRatio);
-      canvas.style.width = `${viewport.width}px`;
+      canvas.width = 1;
+      canvas.height = 1;
       pageEl.appendChild(canvas);
 
       const overlay = document.createElement('div');
@@ -1123,12 +1150,8 @@ async function setupPdfMode(url = docUrl()) {
       pageEl.appendChild(label);
       pdfPages.appendChild(pageEl);
       wirePdfOverlay(overlay);
-
-      await page.render({
-        canvasContext: canvas.getContext('2d'),
-        viewport,
-        transform: pixelRatio === 1 ? null : [pixelRatio, 0, 0, pixelRatio, 0, 0],
-      }).promise;
+      pdfPageStates.set(pageEl, { page, pageEl, canvas, viewport, renderTask: null, rendered: false, visible: false });
+      pdfPageObserver.observe(pageEl);
     }
     pdfLoading.hidden = true;
     renderHighlights();
@@ -1138,6 +1161,49 @@ async function setupPdfMode(url = docUrl()) {
     pdfLoading.textContent = 'This PDF could not be displayed.';
     console.error('PDF rendering failed', error);
   }
+}
+
+async function renderPdfPage(pageState, generation) {
+  if (generation !== pdfLoadGeneration || pageState.rendered || pageState.renderTask || pageState.failed) return;
+  const { page, pageEl, canvas, viewport } = pageState;
+  const pixelRatio = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(viewport.width * pixelRatio);
+  canvas.height = Math.floor(viewport.height * pixelRatio);
+  const renderTask = page.render({
+    canvasContext: canvas.getContext('2d'),
+    viewport,
+    transform: pixelRatio === 1 ? null : [pixelRatio, 0, 0, pixelRatio, 0, 0],
+  });
+  pageState.renderTask = renderTask;
+  try {
+    await renderTask.promise;
+    pageState.rendered = true;
+    pageEl.classList.add('pdf-page-rendered');
+  } catch (error) {
+    if (error?.name !== 'RenderingCancelledException' && generation === pdfLoadGeneration) {
+      pageState.failed = true;
+      pageEl.classList.add('pdf-page-error');
+      console.error('PDF page rendering failed', error);
+    }
+  } finally {
+    pageState.renderTask = null;
+    if (!pageState.visible) {
+      page.cleanup();
+    } else if (!pageState.rendered && !pageState.failed) {
+      renderPdfPage(pageState, generation);
+    }
+  }
+}
+
+function releasePdfPage(pageState) {
+  pageState.renderTask?.cancel();
+  pageState.rendered = false;
+  pageState.pageEl.classList.remove('pdf-page-rendered');
+  // Resetting the bitmap dimensions releases its backing memory while the
+  // page element and comment overlay keep their stable size and position.
+  pageState.canvas.width = 1;
+  pageState.canvas.height = 1;
+  if (!pageState.renderTask) pageState.page.cleanup();
 }
 
 function wirePdfOverlay(overlay) {
