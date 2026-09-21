@@ -12,6 +12,9 @@ const frame = document.getElementById('page-frame');
 const imageStage = document.getElementById('image-stage');
 const pageImage = document.getElementById('page-image');
 const imageOverlay = document.getElementById('image-overlay');
+const pdfStage = document.getElementById('pdf-stage');
+const pdfPages = document.getElementById('pdf-pages');
+const pdfLoading = document.getElementById('pdf-loading');
 const commentsList = document.getElementById('comments-list');
 const filterSelect = document.getElementById('filter');
 const popover = document.getElementById('add-comment-popover');
@@ -382,6 +385,8 @@ async function bootstrap() {
 
   if (isImageDoc()) {
     setupImageMode();
+  } else if (isPdfDoc()) {
+    setupPdfMode();
   } else {
     frame.addEventListener('load', () => {
       injectFrameHooks();
@@ -563,7 +568,7 @@ function makeMenuFile(node) {
   const a = document.createElement('a');
   a.className = 'folder-menu-item' + (node.path === state.meta.path ? ' current' : '');
   a.href = `v/${encodePath(node.path)}`;
-  const icon = { html: '📄', markdown: '📝', json: '🔢', image: '🖼️' }[node.kind] || '📄';
+  const icon = { html: '📄', markdown: '📝', json: '🔢', pdf: '📕', image: '🖼️' }[node.kind] || '📄';
   const badge = node.openCount > 0
     ? `<span class="badge badge-open" title="${node.openCount} open / ${node.commentCount} total">${node.openCount}</span>`
     : node.commentCount > 0
@@ -582,6 +587,10 @@ function positionMenu(menu, anchorBtn) {
 
 function isImageDoc() {
   return state.meta && state.meta.kind === 'image';
+}
+
+function isPdfDoc() {
+  return state.meta && state.meta.kind === 'pdf';
 }
 
 // /raw/ and /render/ address the real file (meta.file, extension and all),
@@ -732,6 +741,8 @@ async function pollDocument() {
     flash('Document updated — reloading…');
     if (isImageDoc()) {
       pageImage.src = `${docUrl()}?_t=${Date.now()}`;
+    } else if (isPdfDoc()) {
+      setupPdfMode(`${docUrl()}?_t=${Date.now()}`);
     } else {
       frame.src = `${docUrl()}?_t=${Date.now()}`;
     }
@@ -1058,6 +1069,190 @@ function setupImageMode() {
   });
 }
 
+// PDF mode renders pages locally with PDF.js. Comments use page-specific
+// rectangular regions, which remain stable as pages scale to fit the pane.
+// Only pages near the viewport retain a rasterized canvas, keeping long PDFs
+// from consuming memory for every page at once.
+let pdfLoadGeneration = 0;
+let pdfDocument = null;
+let pdfPageObserver = null;
+const pdfPageStates = new Map();
+
+async function setupPdfMode(url = docUrl()) {
+  const generation = ++pdfLoadGeneration;
+  if (pdfPageObserver) pdfPageObserver.disconnect();
+  pdfPageObserver = null;
+  for (const state of pdfPageStates.values()) state.renderTask?.cancel();
+  pdfPageStates.clear();
+  if (pdfDocument) pdfDocument.destroy();
+  pdfDocument = null;
+  frame.hidden = true;
+  imageStage.hidden = true;
+  pdfStage.hidden = false;
+  pdfPages.innerHTML = '';
+  clearDraftRegion();
+  state.pendingAnchor = null;
+  popover.hidden = true;
+  pdfLoading.className = 'pdf-loading';
+  pdfLoading.textContent = 'Loading PDF…';
+  pdfLoading.hidden = false;
+  const darkToggleLabel = darkPageToggle.closest('.toggle');
+  if (darkToggleLabel) darkToggleLabel.hidden = true;
+  renderSidebar();
+
+  try {
+    const pdfjs = await import('./vendor/pdfjs/pdf.mjs');
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL('vendor/pdfjs/pdf.worker.mjs', document.baseURI).toString();
+    const pdf = await pdfjs.getDocument(new URL(url, document.baseURI).toString()).promise;
+    if (generation !== pdfLoadGeneration) {
+      pdf.destroy();
+      return;
+    }
+    pdfDocument = pdf;
+    pdfPageObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const pageState = pdfPageStates.get(entry.target);
+        if (!pageState) continue;
+        pageState.visible = entry.isIntersecting;
+        if (entry.isIntersecting) renderPdfPage(pageState, generation);
+        else releasePdfPage(pageState);
+      }
+    }, { root: pdfStage, rootMargin: '100% 0px' });
+
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber++) {
+      const page = await pdf.getPage(pageNumber);
+      if (generation !== pdfLoadGeneration) {
+        pdf.destroy();
+        return;
+      }
+      const viewport = page.getViewport({ scale: 1.5 });
+      const pageEl = document.createElement('div');
+      pageEl.className = 'pdf-page';
+      pageEl.dataset.pageNumber = String(pageNumber);
+      pageEl.style.width = `${viewport.width}px`;
+      pageEl.style.aspectRatio = `${viewport.width} / ${viewport.height}`;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = 1;
+      canvas.height = 1;
+      pageEl.appendChild(canvas);
+
+      const overlay = document.createElement('div');
+      overlay.className = 'pdf-overlay';
+      overlay.dataset.pageNumber = String(pageNumber);
+      overlay.dataset.pageWidth = String(viewport.width / 1.5);
+      overlay.dataset.pageHeight = String(viewport.height / 1.5);
+      pageEl.appendChild(overlay);
+
+      const label = document.createElement('span');
+      label.className = 'pdf-page-number';
+      label.textContent = `${pageNumber} / ${pdf.numPages}`;
+      pageEl.appendChild(label);
+      pdfPages.appendChild(pageEl);
+      wirePdfOverlay(overlay);
+      pdfPageStates.set(pageEl, { page, pageEl, canvas, viewport, renderTask: null, rendered: false, visible: false });
+      pdfPageObserver.observe(pageEl);
+    }
+    pdfLoading.hidden = true;
+    renderHighlights();
+  } catch (error) {
+    if (generation !== pdfLoadGeneration) return;
+    pdfLoading.classList.add('pdf-error');
+    pdfLoading.textContent = 'This PDF could not be displayed.';
+    console.error('PDF rendering failed', error);
+  }
+}
+
+async function renderPdfPage(pageState, generation) {
+  if (generation !== pdfLoadGeneration || pageState.rendered || pageState.renderTask || pageState.failed) return;
+  const { page, pageEl, canvas, viewport } = pageState;
+  const pixelRatio = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(viewport.width * pixelRatio);
+  canvas.height = Math.floor(viewport.height * pixelRatio);
+  const renderTask = page.render({
+    canvasContext: canvas.getContext('2d'),
+    viewport,
+    transform: pixelRatio === 1 ? null : [pixelRatio, 0, 0, pixelRatio, 0, 0],
+  });
+  pageState.renderTask = renderTask;
+  try {
+    await renderTask.promise;
+    pageState.rendered = true;
+    pageEl.classList.add('pdf-page-rendered');
+  } catch (error) {
+    if (error?.name !== 'RenderingCancelledException' && generation === pdfLoadGeneration) {
+      pageState.failed = true;
+      pageEl.classList.add('pdf-page-error');
+      console.error('PDF page rendering failed', error);
+    }
+  } finally {
+    pageState.renderTask = null;
+    if (!pageState.visible) {
+      page.cleanup();
+    } else if (!pageState.rendered && !pageState.failed) {
+      renderPdfPage(pageState, generation);
+    }
+  }
+}
+
+function releasePdfPage(pageState) {
+  pageState.renderTask?.cancel();
+  pageState.rendered = false;
+  pageState.pageEl.classList.remove('pdf-page-rendered');
+  // Resetting the bitmap dimensions releases its backing memory while the
+  // page element and comment overlay keep their stable size and position.
+  pageState.canvas.width = 1;
+  pageState.canvas.height = 1;
+  if (!pageState.renderTask) pageState.page.cleanup();
+}
+
+function wirePdfOverlay(overlay) {
+  let drag = null;
+  overlay.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('.hc-region')) return;
+    e.preventDefault();
+    overlay.setPointerCapture(e.pointerId);
+    popover.hidden = true;
+    clearDraftRegion();
+    const rect = overlay.getBoundingClientRect();
+    drag = { x0: e.clientX - rect.left, y0: e.clientY - rect.top, rect };
+    draftRegionEl = document.createElement('div');
+    draftRegionEl.className = 'hc-region-draft';
+    overlay.appendChild(draftRegionEl);
+  });
+  overlay.addEventListener('pointermove', (e) => {
+    if (drag) positionRegion(draftRegionEl, dragBox(drag, e));
+  });
+  overlay.addEventListener('pointerup', (e) => {
+    if (!drag) return;
+    const box = dragBox(drag, e);
+    const { rect } = drag;
+    drag = null;
+    if (box.w * rect.width < 8 || box.h * rect.height < 8) {
+      clearDraftRegion();
+      setActiveComment(null);
+      return;
+    }
+    positionRegion(draftRegionEl, box);
+    state.pendingAnchor = {
+      type: 'region',
+      pageNumber: Number(overlay.dataset.pageNumber),
+      pageWidth: Number(overlay.dataset.pageWidth),
+      pageHeight: Number(overlay.dataset.pageHeight),
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
+    };
+    document.getElementById('start-comment').textContent = state.reattachCommentId ? '🔗 Re-attach comment' : '💬 Add comment';
+    const paneRect = document.querySelector('.page-pane').getBoundingClientRect();
+    const overlayRect = overlay.getBoundingClientRect();
+    popover.style.left = `${overlayRect.left - paneRect.left + box.x * overlayRect.width}px`;
+    popover.style.top = `${overlayRect.top - paneRect.top + (box.y + box.h) * overlayRect.height + 6}px`;
+    popover.hidden = false;
+  });
+}
+
 function dragBox(drag, e) {
   const { rect } = drag;
   const x1 = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
@@ -1133,6 +1328,30 @@ function renderImageHighlights() {
   }
 }
 
+function renderPdfHighlights() {
+  pdfPages.querySelectorAll('.hc-region').forEach((el) => el.remove());
+  const hideResolved = hideResolvedToggle.checked;
+  for (const c of state.comments) {
+    if (!isRegionAnchor(c.anchor) || !c.anchor.pageNumber) continue;
+    if (hideResolved && c.resolved) continue;
+    const overlay = pdfPages.querySelector(`.pdf-overlay[data-page-number="${c.anchor.pageNumber}"]`);
+    c._anchorOrphaned = !overlay;
+    if (!overlay) continue;
+    const el = document.createElement('div');
+    el.className =
+      'hc-region' +
+      (c.resolved ? ' hc-resolved' : '') +
+      (c.id === state.activeCommentId ? ' hc-active' : '');
+    el.dataset.commentId = c.id;
+    positionRegion(el, c.anchor);
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setActiveComment(c.id, { scrollSidebar: true });
+    });
+    overlay.appendChild(el);
+  }
+}
+
 function isRegionAnchor(anchor) {
   return !!anchor && typeof anchor.x === 'number' && typeof anchor.y === 'number';
 }
@@ -1140,7 +1359,8 @@ function isRegionAnchor(anchor) {
 function anchorLabel(anchor) {
   if (!isRegionAnchor(anchor)) return truncate(anchor && anchor.quote, 140);
   const pct = (v) => `${Math.round(v * 100)}%`;
-  return `Region at ${pct(anchor.x)}, ${pct(anchor.y)} · ${pct(anchor.w)} × ${pct(anchor.h)}`;
+  const page = anchor.pageNumber ? `Page ${anchor.pageNumber} · ` : '';
+  return `${page}Region at ${pct(anchor.x)}, ${pct(anchor.y)} · ${pct(anchor.w)} × ${pct(anchor.h)}`;
 }
 
 // Best-effort dark rendering of the document inside the iframe. Many HTML
@@ -1406,6 +1626,7 @@ function clearHighlights() {
 
 function renderHighlights() {
   if (isImageDoc()) return renderImageHighlights();
+  if (isPdfDoc()) return renderPdfHighlights();
   const doc = frame.contentDocument;
   if (!doc || !doc.body) return;
   clearHighlights();
@@ -1506,6 +1727,8 @@ function renderSidebar() {
       ? 'No deleted comments.'
       : isImageDoc()
       ? 'No comments yet. Drag a box on the image to add one.'
+      : isPdfDoc()
+      ? 'No comments yet. Drag a box on a PDF page to add one.'
       : 'No comments yet. Select text, or drag a box on an image, to add one.';
     commentsList.appendChild(empty);
     return;
@@ -1547,7 +1770,9 @@ function renderThread(comment) {
     const notice = document.createElement('div');
     notice.className = 'orphan-notice';
     notice.textContent = isRegionAnchor(comment.anchor)
-      ? 'The selected image is no longer in this version of the document, so there is no region to show.'
+      ? isPdfDoc()
+        ? 'The selected page is no longer in this version of the PDF, so there is no region to show.'
+        : 'The selected image is no longer in this version of the document, so there is no region to show.'
       : 'The selected text is no longer in this version of the document, so there is no highlight to show.';
     wrap.appendChild(notice);
   }
@@ -1597,12 +1822,12 @@ function renderThread(comment) {
     const reattachBtn = document.createElement('button');
     reattachBtn.className = 'secondary';
     reattachBtn.textContent = 'Re-attach';
-    reattachBtn.title = 'Select replacement text or an image region in the document';
+    reattachBtn.title = 'Select replacement text or draw a replacement region in the document';
     reattachBtn.addEventListener('click', () => {
       state.reattachCommentId = comment.id;
       state.pendingAnchor = null;
-      flash('Select replacement text or drag an image region, then click Re-attach comment.');
-      frame.focus();
+      flash('Select replacement text or drag a region, then click Re-attach comment.');
+      (isPdfDoc() ? pdfStage : frame).focus();
     });
     actions.appendChild(reattachBtn);
   }
@@ -1637,7 +1862,7 @@ function openReplyBox(threadEl, commentId) {
 }
 
 function anchorSortKey(anchor) {
-  if (isRegionAnchor(anchor)) return (anchor.imageIndex || 0) * 1e9 + anchor.y * 1e6 + anchor.x * 1e3;
+  if (isRegionAnchor(anchor)) return (anchor.pageNumber || anchor.imageIndex || 0) * 1e9 + anchor.y * 1e6 + anchor.x * 1e3;
   return anchor && typeof anchor.startIdx === 'number' ? anchor.startIdx : 0;
 }
 
@@ -1653,8 +1878,18 @@ function setActiveComment(commentId, opts = {}) {
       }
     }
   }
+  if (isPdfDoc()) {
+    pdfPages.querySelectorAll('.hc-region.hc-active').forEach((el) => el.classList.remove('hc-active'));
+    if (commentId) {
+      const target = pdfPages.querySelector(`.hc-region[data-comment-id="${commentId}"]`);
+      if (target) {
+        target.classList.add('hc-active');
+        if (opts.scrollFrame) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  }
   const doc = frame.contentDocument;
-  if (doc && !isImageDoc()) {
+  if (doc && !isImageDoc() && !isPdfDoc()) {
     doc.querySelectorAll('.hc-highlight.hc-active, .hc-image-region.hc-active').forEach((el) => el.classList.remove('hc-active'));
     if (commentId) {
       const target = doc.querySelector(`.hc-highlight[data-comment-id="${commentId}"], .hc-image-region[data-comment-id="${commentId}"]`);
