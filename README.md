@@ -36,6 +36,8 @@ Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, has
 
 With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or drag in `.html`/`.md`/`.json`/`.jsonl`/image files (multi-select works), choose a destination folder, and they're published instantly — made an artifact in Claude and want comments on it? Download it and upload it here, then share the link. Uploading to an existing name updates that page in place: the link and every comment thread stay put, so this is also how you ship a revision. The UI confirms before replacing files.
 
+HTML and Markdown viewers also get an **Edit** button when the current user can modify the file. The editor shows the original source and a rendered preview side by side; **Save** updates the file through the same atomic publishing and comment re-anchoring flow. If someone else updates the document while the editor is open, the save is rejected instead of overwriting their version. Use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>S</kbd> to save.
+
 When `TRUST_IDENTITY_HEADER` is configured, the destination is prefilled with your personal folder, derived from your signed-in identity (`eric.olson@corp.com` → `eric_olson/`). Nothing is created at login — the folder appears with your first upload.
 
 Hovering a row in the file tree shows two more actions: **rename/move** (✎ — old links redirect to the new location, comments come along) and **archive** (🗄 — hides the file behind a "Show archived" toggle without touching its link or comments; unarchive puts it back).
@@ -203,7 +205,7 @@ Off by default. Set `UPLOADS_ENABLED=1` to allow publishing and deleting files o
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `PUT` | `/api/upload/<path>` | Write the raw request body to `<path>` (a real filename with extension, e.g. `docs/spec.html`). Parent directories are created. Overwriting is the update flow — the doc path, shared links, and comment threads all stay put. Responds `{ path, file, bytes, updated, visibility }` — an identified first upload of a path claims ownership at `DEFAULT_VISIBILITY`, so check `visibility` to know whether the page needs sharing before its link works for others. |
+| `PUT` | `/api/upload/<path>` | Write the raw request body to `<path>` (a real filename with extension, e.g. `docs/spec.html`). Parent directories are created. Overwriting is the update flow — the doc path, shared links, and comment threads all stay put. Send `X-Document-Modified-At` with the `modifiedAt` value from `/api/file` for conflict-safe edits; a newer file returns `409`. Responds `{ path, file, bytes, updated, visibility, modifiedAt }` — an identified first upload of a path claims ownership at `DEFAULT_VISIBILITY`, so check `visibility` to know whether the page needs sharing before its link works for others. |
 | `DELETE` | `/api/upload/<path>` | Delete a file (doc path or real filename). The comment store is kept, so re-uploading the same path restores its threads. |
 
 ```bash

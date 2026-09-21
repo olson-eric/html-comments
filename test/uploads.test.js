@@ -101,6 +101,29 @@ test('upload API', async (t) => {
     assert.strictEqual(after.comments[0].text, 'nice');
   });
 
+  await t.test('editable metadata and optimistic write conflicts protect browser edits', async () => {
+    const before = await (await fetch(`${base}/api/file?path=docs/spec`)).json();
+    assert.strictEqual(before.editable, true);
+
+    const saved = await fetch(`${base}/api/upload/docs/spec.md`, {
+      method: 'PUT',
+      headers: { 'X-Document-Modified-At': before.modifiedAt },
+      body: '# Edited in browser\n',
+    });
+    assert.strictEqual(saved.status, 200);
+    const savedBody = await saved.json();
+    assert.match(savedBody.modifiedAt, /^\d{4}-\d\d-\d\dT/);
+
+    const stale = await fetch(`${base}/api/upload/docs/spec.md`, {
+      method: 'PUT',
+      headers: { 'X-Document-Modified-At': before.modifiedAt },
+      body: '# This must not overwrite the newer copy\n',
+    });
+    assert.strictEqual(stale.status, 409);
+    assert.strictEqual((await stale.json()).error, 'document changed since editing began');
+    assert.strictEqual(fs.readFileSync(path.join(ROOT, 'docs', 'spec.md'), 'utf8'), '# Edited in browser\n');
+  });
+
   await t.test('inline image region anchors preserve image identity', async () => {
     await fetch(`${base}/api/upload/docs/inline-image.html`, {
       method: 'PUT',
