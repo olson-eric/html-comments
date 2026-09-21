@@ -958,6 +958,7 @@ router.get('/api/file', (req, res) => {
     modifiedAt: stat.mtime.toISOString(),
     archived: readArchived().has(f.rel) || undefined,
     visibility: p ? p.visibility : 'everyone',
+    editable: UPLOADS_ENABLED && ['html', 'markdown'].includes(f.kind) && canMutateRel(f.rel, identityFor(req)),
     comments: activeComments(data),
   });
 });
@@ -1242,6 +1243,16 @@ router.put(
     const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
     if (!body.length) return res.status(400).json({ error: 'empty body' });
     const updated = fs.existsSync(target.abs);
+    const expectedModifiedAt = String(req.get('X-Document-Modified-At') || '').trim();
+    if (expectedModifiedAt && updated) {
+      const currentModifiedAt = fs.statSync(target.abs).mtime.toISOString();
+      if (expectedModifiedAt !== currentModifiedAt) {
+        return res.status(409).json({
+          error: 'document changed since editing began',
+          modifiedAt: currentModifiedAt,
+        });
+      }
+    }
     fs.mkdirSync(path.dirname(target.abs), { recursive: true });
     writeFileAtomic(target.abs, body);
     const published = resolveFile(target.rel);
@@ -1274,7 +1285,8 @@ router.put(
     if (anchorOutcomes.orphaned) {
       recordEvent('anchors_orphaned', { doc, rel: target.rel }, { count: anchorOutcomes.orphaned });
     }
-    res.json({ path: doc, file: target.rel, bytes: body.length, updated, visibility });
+    const modifiedAt = fs.statSync(target.abs).mtime.toISOString();
+    res.json({ path: doc, file: target.rel, bytes: body.length, updated, visibility, modifiedAt });
   }
 );
 
