@@ -77,6 +77,45 @@ const exportBtn = document.getElementById('export-btn');
 const exportMenu = document.getElementById('export-menu');
 const exportRaw = document.getElementById('export-raw');
 const exportPdf = document.getElementById('export-pdf');
+const editDocumentBtn = document.getElementById('edit-document');
+const editorStage = document.getElementById('editor-stage');
+const editorTitle = document.getElementById('editor-title');
+const editorStatus = document.getElementById('editor-status');
+const editorSource = document.getElementById('document-source');
+const editorPreview = document.getElementById('editor-preview');
+const editorSave = document.getElementById('editor-save');
+const editorCancel = document.getElementById('editor-cancel');
+let editorOriginal = '';
+let editorModifiedAt = null;
+let previewTimer = null;
+
+editDocumentBtn.addEventListener('click', openEditor);
+editorCancel.addEventListener('click', () => closeEditor(true));
+editorSave.addEventListener('click', saveDocument);
+editorSource.addEventListener('input', () => {
+  updateEditorStatus();
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(renderEditorPreview, 120);
+});
+editorSource.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const start = editorSource.selectionStart;
+    editorSource.setRangeText('  ', start, editorSource.selectionEnd, 'end');
+    editorSource.dispatchEvent(new Event('input'));
+  }
+});
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's' && !editorStage.hidden) {
+    e.preventDefault();
+    saveDocument();
+  }
+});
+window.addEventListener('beforeunload', (e) => {
+  if (editorStage.hidden || editorSource.value === editorOriginal) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
 
 exportBtn.addEventListener('click', () => {
   const opening = exportMenu.hidden;
@@ -339,6 +378,7 @@ async function bootstrap() {
   exportRaw.href = `raw/${encodePath(state.meta.file)}?download=1`;
   exportRaw.download = state.meta.name;
   exportBtn.disabled = false;
+  editDocumentBtn.hidden = !state.meta.editable;
   document.getElementById('page-title').textContent = state.meta.title;
   await renderBreadcrumb();
   document.title = `${state.meta.title} — html-comments`;
@@ -689,6 +729,7 @@ function mergeComments(serverComments) {
 }
 
 async function pollDocument() {
+  if (!editorStage.hidden) return;
   if (commentsList.querySelector('.composer-host, .reply-composer')) return;
   try {
     const res = await fetch(`api/file${apiQS}`);
@@ -706,6 +747,136 @@ async function pollDocument() {
       frame.src = `${docUrl()}?_t=${Date.now()}`;
     }
   } catch {}
+}
+
+async function openEditor() {
+  if (!state.meta || !state.meta.editable || !editorStage.hidden) return;
+  editDocumentBtn.disabled = true;
+  try {
+    const res = await fetch(`raw/${encodePath(state.meta.file)}?_t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error();
+    editorOriginal = await res.text();
+  } catch {
+    flash('Failed to load document source');
+    editDocumentBtn.disabled = false;
+    return;
+  }
+  editorModifiedAt = state.meta.modifiedAt;
+  editorSource.value = editorOriginal;
+  editorTitle.textContent = `Edit ${state.meta.name}`;
+  editorStatus.textContent = '';
+  editorStatus.classList.remove('editor-error');
+  popover.hidden = true;
+  frame.hidden = true;
+  editorStage.hidden = false;
+  renderEditorPreview();
+  editorSource.focus();
+  editDocumentBtn.disabled = false;
+}
+
+function closeEditor(confirmDiscard) {
+  if (editorStage.hidden) return;
+  if (confirmDiscard && editorSource.value !== editorOriginal && !window.confirm('Discard your unsaved changes?')) return;
+  clearTimeout(previewTimer);
+  editorStage.hidden = true;
+  frame.hidden = false;
+  editorPreview.srcdoc = '';
+  editorStatus.textContent = '';
+  editorStatus.classList.remove('editor-error');
+}
+
+function updateEditorStatus() {
+  editorStatus.classList.remove('editor-error');
+  editorStatus.textContent = editorSource.value === editorOriginal ? '' : 'Unsaved changes';
+}
+
+function rawDirectoryUrl() {
+  const parts = state.meta.file.split('/');
+  parts.pop();
+  const dir = parts.length ? `${encodePath(parts.join('/'))}/` : '';
+  return new URL(`raw/${dir}`, document.baseURI).toString();
+}
+
+function withPreviewBase(source) {
+  const base = `<base href="${escapeHtml(rawDirectoryUrl())}">`;
+  if (/<head\b[^>]*>/i.test(source)) return source.replace(/<head\b[^>]*>/i, (tag) => `${tag}${base}`);
+  if (/<html\b[^>]*>/i.test(source)) return source.replace(/<html\b[^>]*>/i, (tag) => `${tag}<head>${base}</head>`);
+  return `${base}${source}`;
+}
+
+function markdownPreviewDocument(source) {
+  return `<!doctype html><html><head><meta charset="utf-8"><base href="${escapeHtml(rawDirectoryUrl())}"><style>
+    body { max-width: 840px; margin: 0 auto; padding: 2.5rem 2rem 4rem; color: #1f2328; background: #fff; font: 16px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.4em 0 0.5em; }
+    h1 { font-size: 1.9em; } h2 { font-size: 1.45em; } h3 { font-size: 1.2em; }
+    h1, h2 { border-bottom: 1px solid #d8dee4; padding-bottom: 0.3em; }
+    p, ul, ol, blockquote, pre, table { margin: 0 0 1em; }
+    a { color: #0969da; } img { max-width: 100%; }
+    code { background: rgba(175,184,193,.2); padding: .1em .35em; border-radius: 4px; font: .88em ui-monospace, monospace; }
+    pre { overflow-x: auto; padding: .8em 1em; border-radius: 8px; background: #f6f8fa; }
+    pre code { padding: 0; background: none; } blockquote { border-left: 4px solid #d8dee4; padding-left: 1em; color: #59636e; }
+    table { border-collapse: collapse; } th, td { border: 1px solid #d8dee4; padding: .35em .8em; text-align: left; }
+  </style></head><body>${renderMarkdown(source, { breaks: false })}</body></html>`;
+}
+
+function renderEditorPreview() {
+  if (editorStage.hidden) return;
+  editorPreview.srcdoc = state.meta.kind === 'markdown'
+    ? markdownPreviewDocument(editorSource.value)
+    : withPreviewBase(editorSource.value);
+}
+
+async function saveDocument() {
+  if (editorStage.hidden || editorSave.disabled) return;
+  if (!editorSource.value.length) {
+    editorStatus.textContent = 'Document cannot be empty';
+    editorStatus.classList.add('editor-error');
+    return;
+  }
+  editorSave.disabled = true;
+  editorCancel.disabled = true;
+  editorStatus.textContent = 'Saving…';
+  editorStatus.classList.remove('editor-error');
+  try {
+    const res = await fetch(`api/upload/${encodePath(state.meta.file)}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Document-Modified-At': editorModifiedAt,
+      },
+      body: editorSource.value,
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      editorStatus.textContent = res.status === 409
+        ? 'A newer version exists. Copy your changes, then reload.'
+        : (result.error || 'Save failed');
+      editorStatus.classList.add('editor-error');
+      return;
+    }
+    editorOriginal = editorSource.value;
+    editorModifiedAt = result.modifiedAt;
+    const metaRes = await fetch(`api/file${apiQS}`);
+    if (metaRes.ok) {
+      state.meta = await metaRes.json();
+      state.comments = state.meta.comments || [];
+      lastCommentsEtag = JSON.stringify(state.comments);
+      lastDocModifiedAt = state.meta.modifiedAt;
+      document.getElementById('page-title').textContent = state.meta.title;
+      document.title = `${state.meta.title} — html-comments`;
+    } else {
+      lastDocModifiedAt = result.modifiedAt;
+    }
+    closeEditor(false);
+    frame.src = `${docUrl()}?_t=${Date.now()}`;
+    flash('Document saved');
+  } catch {
+    editorStatus.textContent = 'Save failed';
+    editorStatus.classList.add('editor-error');
+  } finally {
+    editorSave.disabled = false;
+    editorCancel.disabled = false;
+  }
 }
 
 function injectFrameHooks() {

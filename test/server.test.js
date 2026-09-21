@@ -99,6 +99,7 @@ test('HTTP routes', async (t) => {
     assert.strictEqual(byDoc.path, 'docs/spec');
     assert.strictEqual(byDoc.file, 'docs/spec.html');
     assert.strictEqual(byDoc.title, 'The Spec');
+    assert.strictEqual(byDoc.editable, false);
     const byFile = await (await fetch(`${base}/api/file?path=docs/spec.html`)).json();
     assert.strictEqual(byFile.path, 'docs/spec');
   });

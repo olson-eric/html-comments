@@ -64,6 +64,7 @@
             <button id="export-pdf" type="button" role="menuitem">PDF…</button>
           </div>
         </div>
+        <button id="edit-document" class="secondary" type="button" hidden>Edit</button>
         <div class="copy-link-wrap">
           <div class="copy-link-split">
             <button id="copy-link" type="button">
@@ -97,6 +98,28 @@
     <main class="viewer-main">
       <section class="page-pane">
         <iframe id="page-frame" sandbox="allow-same-origin allow-scripts allow-popups allow-forms"></iframe>
+        <div id="editor-stage" class="editor-stage" hidden>
+          <div class="editor-toolbar">
+            <div>
+              <strong id="editor-title">Edit document</strong>
+              <span id="editor-status" class="muted" role="status"></span>
+            </div>
+            <div class="editor-actions">
+              <button id="editor-cancel" class="secondary" type="button">Cancel</button>
+              <button id="editor-save" type="button">Save</button>
+            </div>
+          </div>
+          <div class="editor-panels">
+            <label class="editor-panel editor-source-panel">
+              <span>Source</span>
+              <textarea id="document-source" spellcheck="false" aria-label="Document source"></textarea>
+            </label>
+            <section class="editor-panel editor-preview-panel" aria-label="Rendered preview">
+              <span>Preview</span>
+              <iframe id="editor-preview" sandbox="allow-same-origin" title="Rendered preview"></iframe>
+            </section>
+          </div>
+        </div>
         <div id="image-stage" class="image-stage" hidden>
           <div class="image-wrap">
             <img id="page-image" alt="" draggable="false" />

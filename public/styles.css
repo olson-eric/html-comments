@@ -532,6 +532,87 @@ button.crumb-dir:hover { background: var(--row-hover); }
   border: none;
   background: white;
 }
+.editor-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.editor-stage[hidden] { display: none; }
+.editor-toolbar {
+  min-height: 3.25rem;
+  padding: 0.6rem 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.editor-toolbar > div:first-child {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
+}
+.editor-toolbar strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-toolbar .muted { font-size: 0.8rem; }
+.editor-toolbar .editor-error { color: var(--danger); }
+.editor-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
+.editor-panels {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr);
+}
+.editor-panel {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+.editor-panel > span {
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.editor-source-panel { border-right: 1px solid var(--border); }
+#document-source {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 1rem;
+  color: var(--text);
+  background: var(--surface);
+  font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  tab-size: 2;
+}
+#document-source:focus { box-shadow: inset 0 0 0 2px var(--accent); }
+#editor-preview {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: white;
+}
+@media (max-width: 900px) {
+  .editor-panels { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+  .editor-source-panel { border-right: 0; border-bottom: 1px solid var(--border); }
+}
 .add-comment-popover {
   position: absolute;
   z-index: 10;
