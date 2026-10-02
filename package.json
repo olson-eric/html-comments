@@ -41,7 +41,7 @@
   "homepage": "https://github.com/olson-eric/html-comments#readme",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.19.2",
+    "express": "^4.22.3",
     "pdfjs-dist": "4.8.69"
   }
 }
