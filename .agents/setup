@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 echo "Checking Node.js runtime..."
-node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 18) { console.error(`Node.js >=18 is required (found ${process.version})`); process.exit(1) }'
+node -e 'const major = Number(process.versions.node.split(".")[0]); if (major < 22) { console.error(`Node.js >=22 is required (found ${process.version})`); process.exit(1) }'
 
 echo "Installing dependencies from package-lock.json..."
 npm ci
