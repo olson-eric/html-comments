@@ -23,9 +23,26 @@ const authorInput = document.getElementById('author');
 const sendToAgentBtn = document.getElementById('send-to-agent');
 const copyAgentInstructionsBtn = document.getElementById('copy-agent-instructions');
 const agentStatus = document.getElementById('agent-status');
+const nameDialog = document.getElementById('name-dialog');
+const nameForm = document.getElementById('name-form');
+const nameInput = document.getElementById('name-input');
 
 authorInput.value = localStorage.getItem('hc:author') || '';
 authorInput.addEventListener('input', () => localStorage.setItem('hc:author', authorInput.value));
+nameDialog.addEventListener('cancel', (e) => e.preventDefault());
+nameForm.addEventListener('submit', (e) => {
+  const name = nameInput.value.trim();
+  if (!name) {
+    e.preventDefault();
+    nameInput.setCustomValidity('Enter your name');
+    nameInput.reportValidity();
+    return;
+  }
+  nameInput.setCustomValidity('');
+  authorInput.value = name;
+  localStorage.setItem('hc:author', name);
+});
+nameInput.addEventListener('input', () => nameInput.setCustomValidity(''));
 
 // When the deployment trusts an auth proxy's identity header, the server
 // stamps authorship itself; show the signed-in name and lock the field.
@@ -41,6 +58,9 @@ fetch('api/root')
       authorInput.disabled = true;
       authorInput.title = 'Signed in through your organization';
       initShare();
+    } else if (!authorInput.value.trim()) {
+      nameDialog.showModal();
+      nameInput.focus();
     }
   })
   .catch(() => {});
@@ -67,10 +87,6 @@ let lastCommentsEtag = null;
 let lastDocModifiedAt = null;
 
 const copyLinkBtn = document.getElementById('copy-link');
-const copyLinkArrow = document.getElementById('copy-link-arrow');
-const copyLinkPopover = document.getElementById('copy-link-popover');
-const copyLinkNameInput = document.getElementById('copy-link-name');
-const copyLinkConfirmBtn = document.getElementById('copy-link-confirm');
 let copyResetTimer = null;
 
 const exportBtn = document.getElementById('export-btn');
@@ -163,53 +179,10 @@ function exportToPdf() {
   }, { once: true });
 }
 
-// Split button: the main button copies the link as-is; the arrow opens a
-// popover to address the link to a specific recipient.
-copyLinkBtn.addEventListener('click', () => {
-  closeCopyLinkPopover();
-  copyLink('');
-});
+copyLinkBtn.addEventListener('click', copyLink);
 
-copyLinkArrow.addEventListener('click', () => {
-  if (!copyLinkPopover.hidden) {
-    closeCopyLinkPopover();
-    return;
-  }
-  copyLinkNameInput.value = localStorage.getItem('hc:lastRecipient') || '';
-  copyLinkPopover.hidden = false;
-  copyLinkArrow.setAttribute('aria-expanded', 'true');
-  copyLinkNameInput.focus();
-  copyLinkNameInput.select();
-});
-
-copyLinkConfirmBtn.addEventListener('click', doCopyLink);
-copyLinkNameInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') doCopyLink();
-  else if (e.key === 'Escape') closeCopyLinkPopover();
-});
-
-document.addEventListener('click', (e) => {
-  if (copyLinkPopover.hidden) return;
-  if (e.target === copyLinkArrow || copyLinkArrow.contains(e.target)) return;
-  if (copyLinkPopover.contains(e.target)) return;
-  closeCopyLinkPopover();
-});
-
-function closeCopyLinkPopover() {
-  copyLinkPopover.hidden = true;
-  copyLinkArrow.setAttribute('aria-expanded', 'false');
-}
-
-function doCopyLink() {
-  copyLink(copyLinkNameInput.value.trim());
-}
-
-async function copyLink(name) {
+async function copyLink() {
   const url = new URL(`v/${encodePath(filePath)}`, document.baseURI);
-  if (name) {
-    url.searchParams.set('for', name);
-    localStorage.setItem('hc:lastRecipient', name);
-  }
   const link = url.toString();
   let copied = false;
   try {
@@ -219,7 +192,6 @@ async function copyLink(name) {
     copied = legacyCopy(link);
   }
   if (!copied) return;
-  closeCopyLinkPopover();
   copyLinkBtn.classList.add('copied');
   copyLinkBtn.setAttribute('aria-label', 'Link copied');
   clearTimeout(copyResetTimer);
