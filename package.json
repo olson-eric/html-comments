@@ -42,6 +42,6 @@
   "license": "MIT",
   "dependencies": {
     "express": "^4.19.2",
-    "pdfjs-dist": "4.8.69"
+    "pdfjs-dist": "6.3.289"
   }
 }
