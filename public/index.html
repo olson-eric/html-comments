@@ -76,6 +76,19 @@ html-comments publish artifact.html --to foo/bar.html</code></pre>
       </form>
     </dialog>
 
+    <dialog id="rename-dialog" class="rename-dialog">
+      <form method="dialog" id="rename-form">
+        <h3 id="rename-title">Rename</h3>
+        <label class="upload-label" for="rename-path">New path</label>
+        <input id="rename-path" type="text" autocomplete="off" spellcheck="false" />
+        <p id="rename-status" class="dialog-error" role="alert" hidden></p>
+        <div class="upload-actions">
+          <button type="button" id="rename-cancel" class="secondary">Cancel</button>
+          <button type="submit" id="rename-save">Save</button>
+        </div>
+      </form>
+    </dialog>
+
     <script src="theme.js"></script>
     <script src="index.js"></script>
   </body>

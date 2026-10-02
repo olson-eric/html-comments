@@ -1017,7 +1017,8 @@ button.crumb-dir:hover { background: var(--row-hover); }
 
 /* ----- Upload dialog ----- */
 .tree-toolbar-actions { display: flex; gap: 0.5rem; }
-.upload-dialog {
+.upload-dialog,
+.rename-dialog {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface);
@@ -1025,11 +1026,14 @@ button.crumb-dir:hover { background: var(--row-hover); }
   padding: 1.25rem 1.5rem;
   width: min(30rem, 90vw);
 }
-.upload-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
-.upload-dialog h3 { margin: 0 0 0.5rem; }
+.upload-dialog::backdrop,
+.rename-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+.upload-dialog h3,
+.rename-dialog h3 { margin: 0 0 0.5rem; }
 .upload-dialog .muted { color: var(--muted); font-size: 0.9rem; }
 .upload-label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0.75rem 0 0.25rem; }
-.upload-dialog input[type="text"] {
+.upload-dialog input[type="text"],
+.rename-dialog input[type="text"] {
   width: 100%;
   box-sizing: border-box;
   padding: 0.45rem 0.6rem;
@@ -1038,6 +1042,11 @@ button.crumb-dir:hover { background: var(--row-hover); }
   background: var(--bg);
   color: var(--text);
   font: inherit;
+}
+.upload-dialog input[type="text"]:focus,
+.rename-dialog input[type="text"]:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .upload-drop {
   margin-top: 0.75rem;
@@ -1059,8 +1068,12 @@ button.linklike {
   text-decoration: underline;
 }
 .upload-list { list-style: none; padding: 0; margin: 0.5rem 0 0; font-size: 0.9rem; }
-.upload-list li { display: flex; justify-content: space-between; gap: 0.75rem; padding: 0.2rem 0; }
+.upload-list li { display: flex; align-items: center; gap: 0.75rem; padding: 0.25rem 0; }
+.upload-file-details { display: flex; align-items: center; gap: 0.5rem; min-width: 0; flex: 1; }
+.upload-file-details input[type="text"] { min-width: 0; }
+.upload-file-size { color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
 .upload-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+.dialog-error { color: var(--danger); font-size: 0.85rem; margin: 0.5rem 0 0; }
 
 /* ----- Tree row actions (rename / archive) ----- */
 .tree-actions { margin-left: auto; display: none; gap: 0.15rem; }
