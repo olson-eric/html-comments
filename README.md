@@ -35,13 +35,13 @@ Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, has
 
 ## Publishing from the browser
 
-With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or drag in `.html`/`.md`/`.json`/`.jsonl`/`.pdf`/image files (multi-select works), choose a destination folder, and they're published instantly — made an artifact in Claude and want comments on it? Download it and upload it here, then share the link. Uploading to an existing name updates that page in place: the link and every comment thread stay put, so this is also how you ship a revision. The UI confirms before replacing files.
+With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or drag in `.html`/`.md`/`.json`/`.jsonl`/`.pdf`/image files (multi-select works), choose a destination folder, optionally edit each filename, and they're published instantly — made an artifact in Claude and want comments on it? Download it and upload it here, then share the link. Uploading to an existing name updates that page in place: the link and every comment thread stay put, so this is also how you ship a revision. The UI confirms before replacing files.
 
 HTML and Markdown viewers also get an **Edit** button when the current user can modify the file. The editor shows the original source and a rendered preview side by side; **Save** updates the file through the same atomic publishing and comment re-anchoring flow. If someone else updates the document while the editor is open, the save is rejected instead of overwriting their version. Use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>S</kbd> to save.
 
 When `TRUST_IDENTITY_HEADER` is configured, the destination is prefilled with your personal folder, derived from your signed-in identity (`eric.olson@corp.com` → `eric_olson/`). Nothing is created at login — the folder appears with your first upload.
 
-Hovering a row in the file tree shows two more actions: **rename/move** (✎ — old links redirect to the new location, comments come along) and **archive** (🗄 — hides the file behind a "Show archived" toggle without touching its link or comments; unarchive puts it back).
+Hovering a row in the file tree shows two more actions: **rename/move** (✎ — opens an in-app path editor; old links redirect to the new location and comments come along) and **archive** (🗄 — hides the file behind a "Show archived" toggle without touching its link or comments; unarchive puts it back).
 
 Every viewer also has an **Export** menu. **Raw file** downloads the original artifact unchanged; **PDF…** opens the artifact's rendered view and the browser print dialog, where you can choose **Save as PDF**. Both options work for HTML, Markdown, JSON/JSONL, and image artifacts.
 

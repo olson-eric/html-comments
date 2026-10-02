@@ -86,10 +86,10 @@ async function apiMove(from, to) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    alert(`Rename failed: ${err.error || res.status}`);
+    throw new Error(err.error || `Request failed (${res.status})`);
   }
   lastTreeEtag = null;
-  loadTree();
+  await loadTree();
 }
 
 async function apiArchive(docPath, archived) {
@@ -107,6 +107,54 @@ async function apiArchive(docPath, archived) {
 }
 
 // Per-row actions (rename / archive), shown on hover when uploads are enabled.
+const renameDialog = document.getElementById('rename-dialog');
+const renameForm = document.getElementById('rename-form');
+const renameTitle = document.getElementById('rename-title');
+const renamePath = document.getElementById('rename-path');
+const renameStatus = document.getElementById('rename-status');
+const renameSave = document.getElementById('rename-save');
+let renameFrom = '';
+
+function openRenameDialog(node) {
+  renameFrom = node.type === 'file' ? node.file : node.path;
+  renameTitle.textContent = node.type === 'file' ? 'Rename or move file' : 'Rename or move folder';
+  renamePath.value = renameFrom;
+  renamePath.setAttribute('aria-label', node.type === 'file' ? 'New file path with extension' : 'New folder path');
+  renameStatus.hidden = true;
+  renameStatus.textContent = '';
+  renameSave.disabled = false;
+  renameDialog.showModal();
+  renamePath.focus();
+  renamePath.select();
+}
+
+document.getElementById('rename-cancel').addEventListener('click', () => renameDialog.close());
+renameForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const to = renamePath.value.trim();
+  renameStatus.hidden = true;
+  if (!to) {
+    renameStatus.textContent = 'Enter a new path.';
+    renameStatus.hidden = false;
+    renamePath.focus();
+    return;
+  }
+  if (to === renameFrom) {
+    renameDialog.close();
+    return;
+  }
+  renameSave.disabled = true;
+  try {
+    await apiMove(renameFrom, to);
+    renameDialog.close();
+  } catch (err) {
+    renameStatus.textContent = `Rename failed: ${err.message}`;
+    renameStatus.hidden = false;
+    renameSave.disabled = false;
+    renamePath.focus();
+  }
+});
+
 function nodeActions(node) {
   const span = document.createElement('span');
   span.className = 'tree-actions';
@@ -123,11 +171,7 @@ function nodeActions(node) {
     });
     span.appendChild(b);
   };
-  const current = node.type === 'file' ? node.file : node.path;
-  btn('Rename or move', '✎', () => {
-    const to = prompt(node.type === 'file' ? 'New file path (with extension):' : 'New folder path:', current);
-    if (to && to !== current) apiMove(current, to.trim());
-  });
+  btn('Rename or move', '✎', () => openRenameDialog(node));
   if (node.type === 'file') {
     if (node.archived) btn('Unarchive', '↩', () => apiArchive(node.path, false));
     else btn('Archive (hides from the tree; link and comments stay)', '🗄', () => apiArchive(node.path, true));
@@ -206,6 +250,8 @@ const uploadStatus = document.getElementById('upload-status');
 const uploadGo = document.getElementById('upload-go');
 let pendingFiles = [];
 
+document.getElementById('upload-form').addEventListener('submit', (e) => e.preventDefault());
+
 document.getElementById('upload').addEventListener('click', () => {
   pendingFiles = [];
   renderPendingFiles();
@@ -234,28 +280,48 @@ uploadDrop.addEventListener('drop', (e) => {
 
 function addFiles(fileList) {
   for (const f of fileList) {
-    if (!pendingFiles.some((p) => p.name === f.name)) pendingFiles.push(f);
+    if (!pendingFiles.some((p) => p.name === f.name)) pendingFiles.push({ file: f, name: f.name });
   }
   renderPendingFiles();
 }
 
 function renderPendingFiles() {
   uploadList.innerHTML = '';
-  for (const f of pendingFiles) {
+  for (const pending of pendingFiles) {
     const li = document.createElement('li');
-    li.textContent = `${f.name} (${formatBytes(f.size)})`;
+    const details = document.createElement('div');
+    details.className = 'upload-file-details';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = pending.name;
+    input.setAttribute('aria-label', `Upload filename for ${pending.file.name}`);
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.addEventListener('input', () => {
+      pending.name = input.value;
+      updateUploadButton();
+    });
+    const size = document.createElement('span');
+    size.className = 'upload-file-size';
+    size.textContent = formatBytes(pending.file.size);
+    details.append(input, size);
     const rm = document.createElement('button');
     rm.type = 'button';
     rm.className = 'linklike';
     rm.textContent = 'remove';
     rm.addEventListener('click', () => {
-      pendingFiles = pendingFiles.filter((p) => p !== f);
+      pendingFiles = pendingFiles.filter((p) => p !== pending);
       renderPendingFiles();
     });
-    li.appendChild(rm);
+    li.append(details, rm);
     uploadList.appendChild(li);
   }
-  uploadGo.disabled = pendingFiles.length === 0;
+  updateUploadButton();
+}
+
+function updateUploadButton() {
+  const names = pendingFiles.map((p) => p.name.trim());
+  uploadGo.disabled = !names.length || names.some((name) => !name || name.includes('/') || name.includes('\\')) || new Set(names).size !== names.length;
 }
 
 function formatBytes(n) {
@@ -282,9 +348,10 @@ uploadGo.addEventListener('click', async () => {
   // Overwrites are the update flow, but never silent: list what already
   // exists and confirm once.
   const existing = [];
-  for (const f of pendingFiles) {
-    const res = await fetch(`api/file?path=${encodeURIComponent(destPathFor(f.name))}`);
-    if (res.ok) existing.push(f.name);
+  for (const pending of pendingFiles) {
+    const name = pending.name.trim();
+    const res = await fetch(`api/file?path=${encodeURIComponent(destPathFor(name))}`);
+    if (res.ok) existing.push(name);
   }
   if (existing.length && !confirm(`This will replace: ${existing.join(', ')}. Continue?`)) {
     uploadGo.disabled = false;
@@ -294,19 +361,20 @@ uploadGo.addEventListener('click', async () => {
 
   const failures = [];
   let done = 0;
-  for (const f of pendingFiles) {
-    setUploadStatus(`Uploading ${f.name} (${++done}/${pendingFiles.length})…`);
+  for (const pending of pendingFiles) {
+    const name = pending.name.trim();
+    setUploadStatus(`Uploading ${name} (${++done}/${pendingFiles.length})…`);
     try {
-      const res = await fetch(`api/upload/${encodePath(destPathFor(f.name))}`, {
+      const res = await fetch(`api/upload/${encodePath(destPathFor(name))}`, {
         method: 'PUT',
-        body: f,
+        body: pending.file,
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        failures.push(`${f.name}: ${err.error || res.status}`);
+        failures.push(`${name}: ${err.error || res.status}`);
       }
     } catch (e) {
-      failures.push(`${f.name}: ${e.message}`);
+      failures.push(`${name}: ${e.message}`);
     }
   }
   uploadGo.disabled = false;
