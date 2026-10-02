@@ -12,8 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Oldest supported (package.json engines >=18) through current LTS.
-        node: [18, 20, 22]
+        # Oldest supported release and latest LTS.
+        node: [22, 24]
     steps:
       # Actions are pinned to full commit SHAs so a moved or compromised tag
       # can't change what runs in CI; Dependabot keeps the pins current.
