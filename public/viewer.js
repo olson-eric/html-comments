@@ -854,6 +854,8 @@ async function saveDocument() {
 function injectFrameHooks() {
   const doc = frame.contentDocument;
   if (!doc) return;
+  // Frame clicks do not bubble to the viewer's outside-click handler.
+  doc.addEventListener('click', closeFolderMenu, true);
   const style = doc.createElement('style');
   style.textContent = `
     .hc-highlight { background: rgba(255, 213, 79, 0.55); border-bottom: 2px solid rgba(255, 152, 0, 0.7); cursor: pointer; transition: background 0.15s; }
