@@ -1485,6 +1485,8 @@ async function addReply(commentId, text) {
   const reply = await res.json();
   const c = state.comments.find((c) => c.id === commentId);
   c.replies.push(reply);
+  c.resolved = false;
+  renderHighlights();
   renderSidebar();
 }
 
