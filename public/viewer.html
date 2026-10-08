@@ -74,6 +74,7 @@
             Copied
           </span>
         </button>
+        <button id="toggle-comments" class="secondary" type="button" aria-controls="comment-sidebar" aria-expanded="true">Comments <span id="comment-count">0</span></button>
         <button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle dark mode">🌙</button>
       </div>
     </header>
@@ -118,7 +119,7 @@
         </div>
       </section>
 
-      <aside class="sidebar">
+      <aside class="sidebar" id="comment-sidebar" aria-label="Comments">
         <div class="sidebar-header">
           <h2>Comments</h2>
           <select id="filter">
@@ -127,6 +128,7 @@
             <option value="resolved">Resolved</option>
             <option value="deleted">Deleted</option>
           </select>
+          <button id="close-comments" class="secondary" type="button" aria-label="Collapse comments" title="Collapse comments">×</button>
         </div>
         <div class="agent-dispatch">
           <button id="send-to-agent" type="button" disabled>Send to agent</button>

@@ -26,6 +26,27 @@ const agentStatus = document.getElementById('agent-status');
 const nameDialog = document.getElementById('name-dialog');
 const nameForm = document.getElementById('name-form');
 const nameInput = document.getElementById('name-input');
+const commentSidebar = document.getElementById('comment-sidebar');
+const toggleCommentsBtn = document.getElementById('toggle-comments');
+const closeCommentsBtn = document.getElementById('close-comments');
+const pagePane = document.querySelector('.page-pane');
+const narrowViewer = matchMedia('(max-width: 800px)');
+narrowViewer.addEventListener('change', () => {
+  pagePane.inert = narrowViewer.matches && !commentSidebar.hidden;
+});
+
+function setCommentsOpen(open) {
+  commentSidebar.hidden = !open;
+  pagePane.inert = narrowViewer.matches && open;
+  document.querySelector('.viewer-main').classList.toggle('comments-collapsed', !open);
+  toggleCommentsBtn.setAttribute('aria-expanded', String(open));
+  localStorage.setItem('hc:commentsCollapsed', open ? '0' : '1');
+  if (!open && commentSidebar.contains(document.activeElement)) toggleCommentsBtn.focus();
+}
+
+setCommentsOpen(localStorage.getItem('hc:commentsCollapsed') !== '1');
+toggleCommentsBtn.addEventListener('click', () => setCommentsOpen(commentSidebar.hidden));
+closeCommentsBtn.addEventListener('click', () => setCommentsOpen(false));
 
 authorInput.value = localStorage.getItem('hc:author') || '';
 authorInput.addEventListener('input', () => localStorage.setItem('hc:author', authorInput.value));
@@ -1429,6 +1450,7 @@ async function reattachComment(commentId, anchor) {
 }
 
 function openComposerForNewComment(anchor) {
+  setCommentsOpen(true);
   const existing = commentsList.querySelector('.composer-host');
   if (existing) existing.remove();
   const host = document.createElement('div');
@@ -1455,6 +1477,7 @@ function openComposerForNewComment(anchor) {
   });
   host.appendChild(composer);
   commentsList.prepend(host);
+  ta.focus();
 }
 
 async function createComment(anchor, text) {
@@ -1690,6 +1713,9 @@ function wrapTextNodeRange(node, start, end, comment) {
 
 function renderSidebar() {
   updateAgentDispatch();
+  const openCount = state.comments.filter((c) => !c.resolved).length;
+  document.getElementById('comment-count').textContent = openCount;
+  toggleCommentsBtn.setAttribute('aria-label', `Comments, ${openCount} open`);
   commentsList.innerHTML = '';
   const filter = filterSelect.value;
   let comments = filter === 'deleted' ? [...state.deletedComments] : [...state.comments];
@@ -1843,6 +1869,7 @@ function anchorSortKey(anchor) {
 }
 
 function setActiveComment(commentId, opts = {}) {
+  if (commentId && opts.scrollSidebar) setCommentsOpen(true);
   state.activeCommentId = commentId;
   if (isImageDoc()) {
     imageOverlay.querySelectorAll('.hc-region.hc-active').forEach((el) => el.classList.remove('hc-active'));
