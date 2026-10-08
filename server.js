@@ -1077,8 +1077,11 @@ router.post('/api/file/comments/:cid/replies', (req, res) => {
     createdAt: new Date().toISOString(),
   };
   comment.replies.push(reply);
+  const wasResolved = comment.resolved;
+  comment.resolved = false;
   writeComments(f.rel, data);
   recordEvent('replied', f, { commentId: comment.id, author: reply.author });
+  if (wasResolved) recordEvent('unresolved', f, { commentId: comment.id, author: reply.author });
   res.json(reply);
 });
 

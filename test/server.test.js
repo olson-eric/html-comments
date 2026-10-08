@@ -174,6 +174,39 @@ test('HTTP routes', async (t) => {
     assert.strictEqual(inbox.count, 0);
   });
 
+  await t.test('follow-up replies reopen resolved threads and can be sent to an agent', async () => {
+    const { comments } = await (await fetch(`${base}/api/file/comments?path=notes&status=resolved`)).json();
+    const id = comments[0].id;
+    const reply = await fetch(`${base}/api/file/comments/${id}/replies?path=notes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'Please adjust the change', author: 'reviewer' }),
+    });
+    assert.strictEqual(reply.status, 200);
+    assert.strictEqual((await reply.json()).text, 'Please adjust the change');
+    const reopened = await (await fetch(`${base}/api/file/comments?path=notes&status=open`)).json();
+    assert.strictEqual(reopened.comments.length, 1);
+    assert.strictEqual(reopened.comments[0].resolved, false);
+    assert.deepStrictEqual(reopened.comments[0].replies.map((r) => r.text), [
+      'Applied the requested change', 'Please adjust the change',
+    ]);
+    const queued = await fetch(`${base}/api/agent/queue?path=notes`, { method: 'POST' });
+    assert.strictEqual(queued.status, 200);
+    assert.strictEqual((await queued.json()).commentCount, 1);
+    const events = (await (await fetch(`${base}/api/updates`)).json()).events;
+    const reopenEvents = events.filter((event) => event.kind === 'unresolved' && event.commentId === id);
+    assert.strictEqual(reopenEvents.length, 1);
+    assert.strictEqual(reopenEvents[0].author, 'reviewer');
+
+    await fetch(`${base}/api/file/comments/${id}/replies?path=notes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: 'One more detail', author: 'reviewer' }),
+    });
+    const after = (await (await fetch(`${base}/api/updates`)).json()).events;
+    assert.strictEqual(after.filter((event) => event.kind === 'unresolved' && event.commentId === id).length, 1);
+  });
+
   await t.test('uploads are disabled by default: mutations 403 and nothing is written', async () => {
     const put = await fetch(`${base}/api/upload/newdoc.html`, { method: 'PUT', body: '<html>x</html>' });
     assert.strictEqual(put.status, 403);
