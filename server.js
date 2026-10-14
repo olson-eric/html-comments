@@ -269,6 +269,11 @@ function buildTree(absDir, relDir = '', archived = readArchived(), perms = readP
       const data = readComments(childRel);
       const comments = activeComments(data);
       const open = comments.filter((c) => !c.resolved).length;
+      let modifiedAt = null;
+      try {
+        modifiedAt = fs.statSync(childAbs).mtime.toISOString();
+      } catch {}
+      const lastCommentAt = latestTimestamp(comments);
       const node = {
         name: e.name,
         path: docPathFor(childRel),
@@ -277,6 +282,11 @@ function buildTree(absDir, relDir = '', archived = readArchived(), perms = readP
         kind: fileKind(e.name),
         commentCount: comments.length,
         openCount: open,
+        modifiedAt,
+        lastCommentAt,
+        // Latest activity: the newer of the last document edit and the last
+        // comment/reply/resolution, so the index can sort by "what moved".
+        activityAt: [modifiedAt, lastCommentAt].filter(Boolean).sort().pop() || null,
       };
       if (archived.has(childRel)) node.archived = true;
       const p = perms[childRel];
@@ -288,7 +298,25 @@ function buildTree(absDir, relDir = '', archived = readArchived(), perms = readP
     if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
     return a.name.localeCompare(b.name);
   });
-  return { name: path.basename(absDir) || path.basename(ROOT), path: relDir, type: 'dir', children };
+  const activityAt = children.map((c) => c.activityAt).filter(Boolean).sort().pop() || null;
+  return { name: path.basename(absDir) || path.basename(ROOT), path: relDir, type: 'dir', activityAt, children };
+}
+
+// Newest ISO timestamp anywhere in a comment list (created, edited, resolved,
+// replies), or null. Every timestamp field in the store ends in "At".
+function latestTimestamp(value) {
+  let latest = null;
+  const visit = (v) => {
+    if (Array.isArray(v)) return v.forEach(visit);
+    if (!v || typeof v !== 'object') return;
+    for (const [k, x] of Object.entries(v)) {
+      if (k.endsWith('At') && typeof x === 'string' && k !== 'deletedAt') {
+        if (!latest || x > latest) latest = x;
+      } else if (x && typeof x === 'object') visit(x);
+    }
+  };
+  visit(value);
+  return latest;
 }
 
 // Comments stay keyed by the real relative path (with extension), so existing
@@ -1512,6 +1540,10 @@ router.get('/v', (req, res) => {
   const f = resolveFile(req.query.path);
   if (!f || !canRead(req, f.rel)) return res.status(404).send('File not found');
   res.redirect(`${BASE_PATH}/v/${encodePath(f.doc)}${keepQuery(req, ['path'])}`);
+});
+
+router.get('/new', (_req, res) => {
+  res.type('text/html; charset=utf-8').send(pageHtml('new.html'));
 });
 
 router.get('/', (_req, res) => {

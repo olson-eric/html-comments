@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>New markdown — html-comments</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('hc:theme');
+          if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+          document.documentElement.dataset.theme = t;
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="new-doc">
+    <header class="new-doc-header">
+      <a id="back" href="./" class="button secondary">← Files</a>
+      <label class="new-doc-path">Save as
+        <input id="doc-path" type="text" autocomplete="off" spellcheck="false" aria-label="New file path" />
+      </label>
+      <button class="theme-toggle" data-theme-toggle type="button" aria-label="Toggle dark mode">🌙</button>
+    </header>
+    <div id="editor-stage" class="editor-stage">
+      <div class="editor-toolbar">
+        <div>
+          <strong id="editor-title">New markdown document</strong>
+          <span id="editor-status" class="muted" role="status"></span>
+        </div>
+        <div class="editor-actions">
+          <button id="editor-save" type="button">Create</button>
+        </div>
+      </div>
+      <div class="editor-panels">
+        <label class="editor-panel editor-source-panel">
+          <span>Markdown</span>
+          <textarea id="document-source" spellcheck="true" aria-label="Markdown source" placeholder="# Title&#10;&#10;Start writing…"></textarea>
+        </label>
+        <section class="editor-panel editor-preview-panel" aria-label="Rendered preview">
+          <span>Preview</span>
+          <iframe id="editor-preview" sandbox="allow-same-origin" title="Rendered preview"></iframe>
+        </section>
+      </div>
+    </div>
+    <script src="theme.js"></script>
+    <script src="markdown.js"></script>
+    <script src="new.js"></script>
+  </body>
+</html>

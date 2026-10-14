@@ -1139,3 +1139,57 @@ button.linklike {
   color: var(--muted);
   cursor: pointer;
 }
+
+/* ----- Folder view, sorting, new document ----- */
+.breadcrumbs { min-width: 0; }
+.breadcrumbs h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem; }
+.breadcrumbs .crumb-sep { color: var(--muted); font-weight: 400; }
+.breadcrumbs .crumb-current { color: var(--text); }
+.tree-toolbar { gap: 1rem; flex-wrap: wrap; }
+.tree-toolbar-actions { align-items: center; flex-wrap: wrap; }
+.sort-select { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: var(--muted); }
+.sort-select select,
+.new-doc-path input {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+a.button {
+  display: inline-block;
+  border-radius: 6px;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.9rem;
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+a.button.secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+a.button:hover { text-decoration: none; filter: brightness(1.05); }
+a.button[hidden] { display: none; }
+button.tree-twisty {
+  background: none;
+  border: none;
+  padding: 0;
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+button.tree-twisty:hover { background: var(--row-hover); color: var(--accent); }
+.tree-dir-row { color: var(--text); }
+.tree-time { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+
+body.new-doc { display: flex; flex-direction: column; height: 100vh; }
+.new-doc-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.new-doc-path { flex: 1; display: flex; align-items: center; gap: 0.5rem; min-width: 0; font-size: 0.85rem; color: var(--muted); }
+.new-doc-path input { flex: 1; min-width: 8rem; max-width: 32rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+.new-doc .editor-stage { position: relative; flex: 1; min-height: 0; }
+.new-doc #editor-status.editor-error { color: var(--danger); }

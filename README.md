@@ -23,6 +23,8 @@ npx html-comments serve /path/to/your/html
 
 Then open `http://localhost:4747` and you'll see a file tree. Click a file to open it in the viewer, select text or drag a box on an image/PDF page, and leave comments.
 
+Click a folder to open a view of just that folder (`/?folder=docs/specs`, with breadcrumbs back up; the ▸ twisty still expands it inline). Every folder view has a **Sort** menu: name, latest activity (newest of the last edit and the last comment or reply, rolled up to folders), recently updated, or open comments. Your choice is remembered.
+
 ## URLs
 
 Every file is addressed by an **extension-free doc path**: `docs/spec.html` lives at `/v/docs/spec`. That's the URL the viewer uses and the one **Copy link** puts on your clipboard, so a pasted link never carries a file extension — an agent given `…/v/shots/screen` knows it's looking at a page in this service (comments, anchors, the JSON API) rather than mistaking the link for a bare `.png` to fetch or upload. Old-style `/v?path=docs/spec.html` links redirect to the new form.
@@ -36,6 +38,8 @@ Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, has
 ## Publishing from the browser
 
 With `UPLOADS_ENABLED=1`, the file browser grows an **Upload** button: pick or drag in `.html`/`.md`/`.json`/`.jsonl`/`.pdf`/image files (multi-select works), choose a destination folder, optionally edit each filename, and they're published instantly — made an artifact in Claude and want comments on it? Download it and upload it here, then share the link. Uploading to an existing name updates that page in place: the link and every comment thread stay put, so this is also how you ship a revision. The UI confirms before replacing files.
+
+**New markdown** opens a blank editor with a live preview (`/new`, prefilled with the folder you were viewing). Pick a path, write, and **Create** (or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>S</kbd>) publishes it and opens it in the viewer; it never overwrites an existing document.
 
 HTML and Markdown viewers also get an **Edit** button when the current user can modify the file. The editor shows the original source and a rendered preview side by side; **Save** updates the file through the same atomic publishing and comment re-anchoring flow. If someone else updates the document while the editor is open, the save is rejected instead of overwriting their version. Use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>S</kbd> to save.
 

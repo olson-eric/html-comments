@@ -143,6 +143,32 @@ test('HTTP routes', async (t) => {
     assert.strictEqual(byFile.file, 'notes.md');
   });
 
+  await t.test('tree reports latest activity from edits and comments, rolled up to folders', async () => {
+    // notes.md got a comment in the previous test; backdate its file so the
+    // comment is the newer signal.
+    const old = new Date('2020-01-01T00:00:00Z');
+    const newer = new Date('2021-06-01T00:00:00Z');
+    fs.utimesSync(path.join(ROOT, 'notes.md'), old, old);
+    fs.utimesSync(path.join(ROOT, 'docs', 'spec.html'), old, old);
+    fs.utimesSync(path.join(ROOT, 'docs', 'spec.md'), newer, newer);
+    const tree = await (await fetch(`${base}/api/tree`)).json();
+    const notes = tree.children.find((c) => c.name === 'notes.md');
+    assert.strictEqual(notes.modifiedAt, old.toISOString());
+    assert.ok(notes.lastCommentAt > '2025');
+    assert.strictEqual(notes.activityAt, notes.lastCommentAt);
+    const docs = tree.children.find((c) => c.name === 'docs');
+    const html = docs.children.find((c) => c.name === 'spec.html');
+    assert.strictEqual(html.lastCommentAt, null);
+    assert.strictEqual(html.activityAt, old.toISOString());
+    assert.strictEqual(docs.activityAt, newer.toISOString());
+  });
+
+  await t.test('new markdown editor page is served', async () => {
+    const res = await fetch(`${base}/new?folder=docs`);
+    assert.strictEqual(res.status, 200);
+    assert.match(await res.text(), /id="document-source"/);
+  });
+
   await t.test('agent discovery is flat, filtered, counted, and bounded', async () => {
     const inbox = await (await fetch(`${base}/api/documents`)).json();
     assert.strictEqual(inbox.status, 'open');
