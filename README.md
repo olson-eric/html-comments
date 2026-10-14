@@ -183,7 +183,14 @@ while true; do
 done
 ```
 
-Add as many comments as needed, then click **Send to agent** in the viewer.
+Add as many comments as needed, then click the dispatch button in the viewer's
+comment panel. It adapts to whether an agent is listening:
+
+- **Send N to agent** (an agent is long-polling): queues the batch and wakes it.
+- **Copy for agent** (nobody is waiting): copies CLI instructions to paste into
+  any agent *and* queues the batch in the same click, so the pasted
+  `html-comments poll` returns the review immediately.
+
 Repeated sends for the same document and recipient update the existing job
 rather than adding duplicates. Poll returns one JSON object containing the
 document, a snapshot of every open comment thread, a lease, and a ready-to-use
@@ -203,7 +210,7 @@ returned job and lease IDs. An expired lease makes the same job pollable again.
 
 On identity-enabled deployments, the poll request must authenticate through
 the same proxy as the reviewer. A batch is addressed to the identity that
-clicked **Send to agent**, and document permissions are checked again when it
+clicked the dispatch button, and document permissions are checked again when it
 is delivered.
 
 ### Publishing files (opt-in)
