@@ -27,11 +27,20 @@
     <main class="home-main">
       <section class="card">
         <div class="tree-toolbar">
-          <h2 id="root-name">Files</h2>
+          <nav id="breadcrumbs" class="breadcrumbs" aria-label="Folder"><h2 id="root-name">Files</h2></nav>
           <div class="tree-toolbar-actions">
+            <label class="sort-select">Sort
+              <select id="sort">
+                <option value="name">Name</option>
+                <option value="activity">Latest activity</option>
+                <option value="modified">Recently updated</option>
+                <option value="comments">Open comments</option>
+              </select>
+            </label>
             <label id="show-archived-wrap" class="show-archived" hidden>
               <input type="checkbox" id="show-archived" /> Show archived
             </label>
+            <a id="new-markdown" class="button secondary" href="new" hidden>New markdown</a>
             <button id="upload" class="secondary" hidden>Upload</button>
             <button id="refresh" class="secondary">Refresh</button>
           </div>
