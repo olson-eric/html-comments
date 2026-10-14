@@ -624,6 +624,7 @@ button.crumb-dir:hover { background: var(--row-hover); }
   position: absolute;
   z-index: 10;
 }
+.add-comment-popover:not([hidden]) { display: flex; gap: 0.4rem; }
 
 /* Image documents: shown directly (no iframe) with a region-comment overlay */
 .image-stage {
