@@ -21,8 +21,9 @@ const popover = document.getElementById('add-comment-popover');
 const composerTemplate = document.getElementById('composer-template');
 const authorInput = document.getElementById('author');
 const sendToAgentBtn = document.getElementById('send-to-agent');
-const copyAgentInstructionsBtn = document.getElementById('copy-agent-instructions');
 const agentStatus = document.getElementById('agent-status');
+// Last /api/agent/status result, plus an error from the last dispatch, if any.
+const agentDispatch = { waiting: false, queued: 0, note: '' };
 const nameDialog = document.getElementById('name-dialog');
 const nameForm = document.getElementById('name-form');
 const nameInput = document.getElementById('name-input');
@@ -349,8 +350,7 @@ filterSelect.addEventListener('change', async () => {
   if (filterSelect.value === 'deleted') await loadDeletedComments();
   renderSidebar();
 });
-sendToAgentBtn.addEventListener('click', sendToAgent);
-copyAgentInstructionsBtn.addEventListener('click', copyAgentInstructions);
+sendToAgentBtn.addEventListener('click', dispatchToAgent);
 
 bootstrap();
 
@@ -609,33 +609,44 @@ async function pollComments() {
   } catch {}
 }
 
-async function sendToAgent() {
+// One dispatch button. With an agent long-polling, it queues the open
+// comments and the agent picks them up. Otherwise it copies instructions to
+// paste into an agent and queues the batch in the same click, so the pasted
+// `poll` returns immediately instead of waiting for a second trip back here.
+async function dispatchToAgent() {
+  if (!state.meta) return;
+  const copyFirst = !agentDispatch.waiting;
+  // Start the clipboard write before any await: browsers only allow it during
+  // the click's user activation, which a network round trip can outlast.
+  const copied = copyFirst ? copyText(agentInstructions()) : null;
   sendToAgentBtn.disabled = true;
-  agentStatus.textContent = 'Sending…';
+  let queued = false;
+  let error = 'Failed to queue';
   try {
     const res = await fetch(`api/agent/queue${apiQS}`, { method: 'POST' });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      agentStatus.textContent = data.error || 'Failed to send';
-      updateAgentDispatch();
-      return;
-    }
-    agentStatus.textContent = `Sent ${data.commentCount} comment${data.commentCount === 1 ? '' : 's'}`;
+    if (res.ok) queued = true;
+    else error = data.error || error;
+  } catch {}
+  if (queued) agentDispatch.queued = Math.max(agentDispatch.queued, 1);
+  agentDispatch.note = queued ? '' : error;
+  if (copied && !(await copied)) {
+    flash(queued ? 'Feedback queued, but copying instructions failed' : 'Could not copy agent instructions');
+  } else if (copied) {
+    flash(queued ? 'Instructions copied — paste them into your agent' : 'Instructions copied, but queueing failed');
+  } else if (queued) {
     flash('Feedback sent to agent');
-  } catch {
-    agentStatus.textContent = 'Failed to send';
-  } finally {
-    sendToAgentBtn.disabled = state.comments.every((comment) => comment.resolved);
   }
+  updateAgentDispatch();
+  pollAgentStatus();
 }
 
-async function copyAgentInstructions() {
-  if (!state.meta) return;
+function agentInstructions() {
   const server = new URL('.', document.baseURI).toString().replace(/\/$/, '');
   const quotedServer = shellQuote(server);
   const quotedPath = shellQuote(state.meta.path);
   const quotedFile = shellQuote(state.meta.file);
-  const instructions = `Handle feedback for ${state.meta.path} with the html-comments CLI:
+  return `Handle feedback for ${state.meta.path} with the html-comments CLI:
 
 export HTML_COMMENTS_URL=${quotedServer}
 # Set HTML_COMMENTS_TOKEN too if the server requires it.
@@ -653,25 +664,15 @@ html-comments publish <local-file> --to ${quotedFile}
 html-comments ack <review.id> <review.lease.id>
 
 Do not ack incomplete work. If the lease expires, poll again before acking.`;
+}
 
-  let copied = false;
+async function copyText(text) {
   try {
-    await navigator.clipboard.writeText(instructions);
-    copied = true;
+    await navigator.clipboard.writeText(text);
+    return true;
   } catch {
-    copied = legacyCopy(instructions);
+    return legacyCopy(text);
   }
-  if (!copied) {
-    flash('Could not copy agent instructions');
-    return;
-  }
-  copyAgentInstructionsBtn.classList.add('copied');
-  copyAgentInstructionsBtn.setAttribute('aria-label', 'Agent instructions copied');
-  flash('Agent instructions copied');
-  setTimeout(() => {
-    copyAgentInstructionsBtn.classList.remove('copied');
-    copyAgentInstructionsBtn.setAttribute('aria-label', 'Copy agent instructions');
-  }, 1800);
 }
 
 function shellQuote(value) {
@@ -680,11 +681,16 @@ function shellQuote(value) {
 
 function updateAgentDispatch() {
   const count = state.comments.filter((comment) => !comment.resolved).length;
+  const { waiting, queued, note } = agentDispatch;
   sendToAgentBtn.disabled = count === 0;
-  const sent = agentStatus.textContent.startsWith('Sent') || agentStatus.textContent.startsWith('Queued');
-  sendToAgentBtn.textContent = count ? (sent ? 'Send again' : `Send ${count} to agent`) : 'Send to agent';
-  if (!count) agentStatus.textContent = 'No open comments';
-  else if (agentStatus.textContent === 'No open comments') agentStatus.textContent = 'Bundles all open comments';
+  sendToAgentBtn.textContent = waiting && count ? `Send ${count} to agent` : 'Copy for agent';
+  sendToAgentBtn.title = waiting
+    ? 'Queue the open comments for the waiting agent'
+    : 'Copy instructions to paste into an agent, and queue the open comments for it';
+  if (note) agentStatus.textContent = note;
+  else if (!count) agentStatus.textContent = 'No open comments';
+  else if (queued) agentStatus.textContent = waiting ? 'Queued · agent waiting' : 'Queued · waiting for an agent to poll';
+  else agentStatus.textContent = waiting ? 'Agent waiting' : 'No agent waiting';
 }
 
 async function pollAgentStatus() {
@@ -692,9 +698,8 @@ async function pollAgentStatus() {
     const res = await fetch(`api/agent/status${apiQS}`);
     if (!res.ok) return;
     const status = await res.json();
-    if (status.queued) agentStatus.textContent = `Queued: ${status.queued} batch${status.queued === 1 ? '' : 'es'}`;
-    else if (status.agentWaiting) agentStatus.textContent = 'Agent waiting';
-    else if (!agentStatus.textContent.startsWith('Sent')) agentStatus.textContent = 'No agent waiting';
+    agentDispatch.waiting = Boolean(status.agentWaiting);
+    agentDispatch.queued = status.queued || 0;
     updateAgentDispatch();
   } catch {}
 }
