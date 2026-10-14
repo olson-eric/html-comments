@@ -31,6 +31,16 @@ Every file is addressed by an **extension-free doc path**: `docs/spec.html` live
 
 If two sibling files differ only by extension (`spec.html` and `spec.md`), the extension-free path resolves by kind priority (`.html`, `.htm`, `.md`, `.markdown`, `.json`, `.jsonl`, `.pdf`, then image extensions); the other file keeps its full name as its path and stays reachable that way.
 
+### Anchor links
+
+A viewer URL can point inside the document with a fragment:
+
+- `#c=<comment-id>` opens and highlights a comment thread (switching the filter to **All** if it is resolved).
+- `#q=<quote>&b=<before>&a=<after>&i=<offset>` highlights a text quote. It is resolved the same way comment anchors are, so it keeps working after the document is edited.
+- `#<id>` scrolls to an element. Markdown headings get GitHub-style ids (`## Retry Policy` → `#retry-policy`, duplicates get `-1`, `-2`), and HTML headings without an id get one. If a linked heading was renamed, the viewer jumps to the closest match.
+
+**Copy link** copies the most specific link for what you're looking at: the selected text, else the active comment, else the section scrolled into view, else the whole document. The selection popover and each comment thread also have a link button, and hovering a heading shows a ¶ that copies its link. In-document `#…` links and links to other documents with a fragment update the viewer URL, so Back works. Fragments the viewer doesn't recognize are passed to the document, for pages that route on their own hash.
+
 To host the app under a URL prefix (e.g. behind a shared cloud gateway or an S3-backed deployment where each project mounts at its own subpath), set `BASE_PATH=/some/prefix` — every page, API route, and asset is served under it, and the frontend uses only relative URLs so links keep working wherever the app is mounted.
 
 Comments are stored in `<html-dir>/.html-comments/` (one JSON file per page, hashed by relative path). Override with `COMMENTS_DIR=…` if you want them somewhere else.

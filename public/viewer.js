@@ -203,17 +203,12 @@ function exportToPdf() {
 
 copyLinkBtn.addEventListener('click', copyLink);
 
+// Copy link points at what you're looking at: the selected text, else the
+// active comment, else the section scrolled into view, else the document.
 async function copyLink() {
-  const url = new URL(`v/${encodePath(filePath)}`, document.baseURI);
-  const link = url.toString();
-  let copied = false;
-  try {
-    await navigator.clipboard.writeText(link);
-    copied = true;
-  } catch (e) {
-    copied = legacyCopy(link);
-  }
-  if (!copied) return;
+  const target = currentLinkTarget();
+  if (!(await copyText(viewerLink(target.hash)))) return;
+  if (target.label) flash(`Link to ${target.label} copied`);
   copyLinkBtn.classList.add('copied');
   copyLinkBtn.setAttribute('aria-label', 'Link copied');
   clearTimeout(copyResetTimer);
@@ -221,6 +216,234 @@ async function copyLink() {
     copyLinkBtn.classList.remove('copied');
     copyLinkBtn.removeAttribute('aria-label');
   }, 1800);
+}
+
+function viewerLink(hash) {
+  const url = new URL(`v/${encodePath(filePath)}`, document.baseURI);
+  if (hash) url.hash = hash;
+  return url.toString();
+}
+
+function frameDocument() {
+  if (!state.meta || isImageDoc() || isPdfDoc()) return null;
+  const doc = frame.contentDocument;
+  return doc && doc.body ? doc : null;
+}
+
+function currentLinkTarget() {
+  const doc = frameDocument();
+  const sel = doc && doc.getSelection();
+  if (sel && !sel.isCollapsed && sel.toString().trim()) {
+    const anchor = serializeRange(sel.getRangeAt(0), doc.body);
+    if (anchor) return { hash: DocAnchors.quoteFragment(anchor), label: 'selection' };
+  }
+  if (state.activeCommentId) return { hash: DocAnchors.commentFragment(state.activeCommentId), label: 'comment' };
+  const heading = doc && headingInView(doc);
+  if (heading) return { hash: DocAnchors.idFragment(heading.id), label: `“${truncate(heading.textContent.trim(), 60)}”` };
+  return { hash: '', label: '' };
+}
+
+// The section being read: the last heading above the top quarter of the
+// frame. Nothing while the document is scrolled to the very top.
+function headingInView(doc) {
+  const win = doc.defaultView;
+  if (!win || win.scrollY < 1) return null;
+  let current = null;
+  for (const heading of documentHeadings(doc)) {
+    if (!heading.id) continue;
+    const rect = heading.getBoundingClientRect();
+    if (!rect.height) continue;
+    if (rect.top > win.innerHeight / 4) break;
+    current = heading;
+  }
+  return current;
+}
+
+function documentHeadings(doc) {
+  return Array.from(doc.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+}
+
+// ----- Anchor links -----
+// The viewer URL's fragment addresses a comment (#c=…), a text quote (#q=…),
+// or an element/heading id inside the framed document (see doc-anchors.js).
+let pendingLocationHash = Boolean(location.hash);
+let lastAppliedHash = null;
+// Rendered-text range a #q= link resolved to, painted with the CSS Custom
+// Highlight API so the document's DOM (and comment offsets) stay untouched.
+let linkTarget = null;
+const LINK_HIGHLIGHT = 'hc-link-target';
+
+window.addEventListener('hashchange', onLocationHashChange);
+window.addEventListener('popstate', onLocationHashChange);
+
+function onLocationHashChange() {
+  if (location.hash === lastAppliedHash) return;
+  applyLocationHash({ smooth: true });
+}
+
+function applyPendingLocationHash() {
+  if (!pendingLocationHash) return;
+  pendingLocationHash = false;
+  applyLocationHash();
+}
+
+function navigateToFragment(hash) {
+  const url = new URL(location.href);
+  url.hash = hash;
+  history.pushState(null, '', url.toString());
+  applyLocationHash({ smooth: true });
+}
+
+function applyLocationHash(opts = {}) {
+  lastAppliedHash = location.hash;
+  // The browser may have scrolled the (overflow: hidden) viewer chrome to an
+  // element whose id matches the fragment; the target lives in the frame.
+  document.scrollingElement.scrollTop = 0;
+  clearLinkTarget();
+  const fragment = DocAnchors.parseFragment(location.hash);
+  if (!fragment) return;
+  if (fragment.type === 'comment') {
+    goToComment(fragment.id);
+    return;
+  }
+  const doc = frameDocument();
+  if (!doc) return;
+  if (fragment.type === 'quote') goToQuote(doc, fragment, opts);
+  else goToId(doc, fragment.id, opts);
+}
+
+function goToComment(id) {
+  const comment = state.comments.find((c) => c.id === id);
+  if (!comment) {
+    flash('The linked comment is not in this document — it may have been deleted');
+    return;
+  }
+  if (comment.resolved && filterSelect.value === 'open') {
+    filterSelect.value = 'all';
+    renderSidebar();
+  }
+  setActiveComment(id, { scrollFrame: true, scrollSidebar: true });
+}
+
+function goToQuote(doc, fragment, opts) {
+  const match = AnchorResolver.resolveAnchor(collectText(doc.body), DocAnchors.quoteAnchor(fragment));
+  if (!match) {
+    flash('The linked text is no longer in this document');
+    return;
+  }
+  linkTarget = { startIdx: match.startIdx, length: match.length };
+  const range = paintLinkTarget();
+  const el = range && (range.startContainer.nodeType === Node.TEXT_NODE ? range.startContainer.parentElement : range.startContainer);
+  if (el) el.scrollIntoView({ block: 'center', behavior: opts.smooth ? 'smooth' : 'auto' });
+}
+
+function goToId(doc, id, opts) {
+  let el = doc.getElementById(id) || doc.getElementsByName(id)[0];
+  if (!el) {
+    const headings = documentHeadings(doc);
+    const match = DocAnchors.matchHeading(id, headings.map((h) => ({ id: h.id, text: h.textContent })));
+    if (match) {
+      el = headings[match.index];
+      if (!match.exact) flash(`Section “${id}” not found — showing the closest match`);
+    }
+  }
+  if (!el) {
+    // Not a section we know; the document may route on its own hash.
+    doc.defaultView.location.hash = id;
+    if (/^[\p{L}\p{N}_-]+$/u.test(id) && !doc.getElementById(id)) flash(`Section “${id}” not found`);
+    return;
+  }
+  el.scrollIntoView({ block: 'start', behavior: opts.smooth ? 'smooth' : 'auto' });
+  el.classList.remove('hc-link-flash');
+  void el.offsetWidth; // restart the animation when linking to the same element twice
+  el.classList.add('hc-link-flash');
+}
+
+// Whether the viewer should handle an in-document "#…" link itself rather
+// than leaving it to the document (which may use the hash for routing).
+function isViewerFragment(doc, hash) {
+  const fragment = DocAnchors.parseFragment(hash);
+  if (!fragment) return false;
+  if (fragment.type !== 'id') return true;
+  if (doc.getElementById(fragment.id) || doc.getElementsByName(fragment.id).length) return true;
+  return !!DocAnchors.matchHeading(fragment.id, documentHeadings(doc).map((h) => ({ id: h.id, text: h.textContent })));
+}
+
+function rangeFromOffsets(root, startIdx, endIdx) {
+  const doc = root.ownerDocument;
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  const range = doc.createRange();
+  let total = 0;
+  let started = false;
+  let n;
+  while ((n = walker.nextNode())) {
+    const end = total + n.nodeValue.length;
+    if (!started && startIdx < end) {
+      range.setStart(n, startIdx - total);
+      started = true;
+    }
+    if (started && endIdx <= end) {
+      range.setEnd(n, endIdx - total);
+      return range;
+    }
+    total = end;
+  }
+  return null;
+}
+
+// Highlights split text nodes when they re-render, which collapses live
+// ranges, so the link target is repainted from offsets after each render.
+function paintLinkTarget() {
+  const doc = frameDocument();
+  if (!doc || !linkTarget) return null;
+  const range = rangeFromOffsets(doc.body, linkTarget.startIdx, linkTarget.startIdx + linkTarget.length);
+  if (!range) return null;
+  const win = doc.defaultView;
+  if (win.CSS && win.CSS.highlights && win.Highlight) {
+    win.CSS.highlights.set(LINK_HIGHLIGHT, new win.Highlight(range));
+  } else {
+    const sel = doc.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  return range;
+}
+
+function clearLinkTarget() {
+  linkTarget = null;
+  const win = frame.contentWindow;
+  if (win && win.CSS && win.CSS.highlights) win.CSS.highlights.delete(LINK_HIGHLIGHT);
+}
+
+// Give headings without an id a GitHub-style slug (markdown documents arrive
+// with them already), and a ¶ link that copies a link to the section. The
+// link has no text node, so rendered-text offsets for comments are unchanged.
+function decorateHeadings(doc) {
+  const slugger = DocAnchors.createSlugger(Array.from(doc.querySelectorAll('[id]'), (el) => el.id));
+  for (const heading of documentHeadings(doc)) {
+    if (!heading.id) {
+      const slug = slugger.slug(heading.textContent);
+      if (!slug) continue;
+      heading.id = slug;
+    }
+    const link = doc.createElement('a');
+    link.className = 'hc-heading-link';
+    link.href = `#${DocAnchors.idFragment(heading.id)}`;
+    link.title = 'Copy link to this section';
+    link.setAttribute('aria-label', 'Copy link to this section');
+    heading.appendChild(link);
+  }
+}
+
+async function copySectionLink(heading) {
+  const hash = DocAnchors.idFragment(heading.id);
+  const copied = copyText(viewerLink(hash));
+  navigateToFragment(hash);
+  if (await copied) flash(`Link to “${truncate(heading.textContent.trim(), 60)}” copied`);
+}
+
+async function copyCommentLink(commentId) {
+  if (await copyText(viewerLink(DocAnchors.commentFragment(commentId)))) flash('Link to comment copied');
 }
 
 // ----- Sharing -----
@@ -382,10 +605,13 @@ async function bootstrap() {
     setupPdfMode();
   } else {
     frame.addEventListener('load', () => {
+      // A reloaded document may have moved the linked text.
+      linkTarget = null;
       injectFrameHooks();
       applyDarkPage();
       renderHighlights();
       renderSidebar();
+      applyPendingLocationHash();
     });
     frame.src = docUrl();
   }
@@ -814,7 +1040,7 @@ function markdownPreviewDocument(source) {
     pre { overflow-x: auto; padding: .8em 1em; border-radius: 8px; background: #f6f8fa; }
     pre code { padding: 0; background: none; } blockquote { border-left: 4px solid #d8dee4; padding-left: 1em; color: #59636e; }
     table { border-collapse: collapse; } th, td { border: 1px solid #d8dee4; padding: .35em .8em; text-align: left; }
-  </style></head><body>${renderMarkdown(source, { breaks: false })}</body></html>`;
+  </style></head><body>${renderMarkdown(source, { breaks: false, headingIds: true })}</body></html>`;
 }
 
 function renderEditorPreview() {
@@ -897,8 +1123,15 @@ function injectFrameHooks() {
     .hc-image-region.hc-active { border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2); background: rgba(255, 213, 79, 0.35); }
     .hc-image-region-draft { position: fixed; z-index: 2147483647; box-sizing: border-box; border: 2px dashed #2563eb; background: rgba(37, 99, 235, 0.12); pointer-events: none; }
     body { padding-bottom: 4rem; }
+    ::highlight(hc-link-target) { background-color: rgba(37, 99, 235, 0.22); text-decoration: underline 2px rgba(37, 99, 235, 0.8); }
+    .hc-link-flash { animation: hc-link-flash 1.8s ease-out; }
+    @keyframes hc-link-flash { from { background-color: rgba(37, 99, 235, 0.18); } to { background-color: transparent; } }
+    .hc-heading-link { margin-left: 0.35em; color: #8c959f !important; font-weight: 400; text-decoration: none !important; opacity: 0; transition: opacity 0.15s; cursor: pointer; user-select: none; }
+    .hc-heading-link::before { content: '¶'; }
+    :is(h1, h2, h3, h4, h5, h6):hover > .hc-heading-link, .hc-heading-link:focus-visible { opacity: 1; }
   `;
   doc.head && doc.head.appendChild(style);
+  decorateHeadings(doc);
 
   setupInlineImageComments(doc);
   doc.addEventListener('mouseup', onFrameSelection);
@@ -913,13 +1146,30 @@ function injectFrameHooks() {
     const link = e.target.closest && e.target.closest('a[href]');
     if (link) {
       const href = link.getAttribute('href');
-      // Let in-page anchor jumps (#fragment) behave normally inside the frame.
-      if (href && !href.startsWith('#')) {
+      if (link.classList.contains('hc-heading-link')) {
+        e.preventDefault();
+        copySectionLink(link.parentElement);
+        return;
+      }
+      // In-page "#…" links update the viewer URL so they can be shared and
+      // navigated back from; fragments the viewer doesn't recognize are left
+      // to the document, which may route on them.
+      if (href && href.startsWith('#')) {
+        if (isViewerFragment(doc, href)) {
+          e.preventDefault();
+          navigateToFragment(href);
+        }
+        return;
+      }
+      if (href) {
         e.preventDefault();
         const url = link.href; // resolved absolute URL
         const docPath = url && documentPathForLink(url, location.origin, appRoot, treeCache);
-        if (docPath) {
-          const viewerUrl = new URL(`v/${encodePath(docPath)}`, document.baseURI).toString();
+        const hash = url && new URL(url).hash;
+        if (docPath === state.meta.path && hash && !(e.metaKey || e.ctrlKey)) {
+          navigateToFragment(hash);
+        } else if (docPath) {
+          const viewerUrl = new URL(`v/${encodePath(docPath)}${hash || ''}`, document.baseURI).toString();
           if (e.metaKey || e.ctrlKey) window.open(viewerUrl, '_blank', 'noopener,noreferrer');
           else location.assign(viewerUrl);
         } else if (url) {
@@ -934,6 +1184,7 @@ function injectFrameHooks() {
       setActiveComment(cid, { scrollSidebar: true });
     } else {
       setActiveComment(null);
+      clearLinkTarget();
     }
   });
 }
@@ -994,6 +1245,7 @@ function setupInlineImageComments(doc) {
       imageHeight: image.naturalHeight,
     };
     document.getElementById('start-comment').textContent = state.reattachCommentId ? '🔗 Re-attach comment' : '💬 Add comment';
+    copySelectionLinkBtn.hidden = true;
     const paneRect = document.querySelector('.page-pane').getBoundingClientRect();
     const frameRect = frame.getBoundingClientRect();
     const imageRect = image.getBoundingClientRect();
@@ -1021,6 +1273,7 @@ function setupImageMode() {
   if (darkToggleLabel) darkToggleLabel.hidden = true;
   pageImage.src = docUrl();
   pageImage.addEventListener('load', renderHighlights);
+  pageImage.addEventListener('load', applyPendingLocationHash, { once: true });
   renderSidebar();
 
   let drag = null;
@@ -1061,6 +1314,7 @@ function setupImageMode() {
       imageWidth: pageImage.naturalWidth,
       imageHeight: pageImage.naturalHeight,
     };
+    copySelectionLinkBtn.hidden = true;
     const paneRect = document.querySelector('.page-pane').getBoundingClientRect();
     const overlayRect = imageOverlay.getBoundingClientRect();
     popover.style.left = `${overlayRect.left - paneRect.left + box.x * overlayRect.width}px`;
@@ -1155,6 +1409,7 @@ async function setupPdfMode(url = docUrl()) {
     }
     pdfLoading.hidden = true;
     renderHighlights();
+    applyPendingLocationHash();
   } catch (error) {
     if (generation !== pdfLoadGeneration) return;
     pdfLoading.classList.add('pdf-error');
@@ -1245,6 +1500,7 @@ function wirePdfOverlay(overlay) {
       h: box.h,
     };
     document.getElementById('start-comment').textContent = state.reattachCommentId ? '🔗 Re-attach comment' : '💬 Add comment';
+    copySelectionLinkBtn.hidden = true;
     const paneRect = document.querySelector('.page-pane').getBoundingClientRect();
     const overlayRect = overlay.getBoundingClientRect();
     popover.style.left = `${overlayRect.left - paneRect.left + box.x * overlayRect.width}px`;
@@ -1413,12 +1669,21 @@ function onFrameSelection() {
   }
   state.pendingAnchor = anchor;
   document.getElementById('start-comment').textContent = state.reattachCommentId ? '🔗 Re-attach comment' : '💬 Add comment';
+  copySelectionLinkBtn.hidden = false;
   const rect = range.getBoundingClientRect();
   const frameRect = frame.getBoundingClientRect();
   popover.style.top = `${frameRect.top + rect.bottom + window.scrollY + 6}px`;
   popover.style.left = `${frameRect.left + rect.left + window.scrollX}px`;
   popover.hidden = false;
 }
+
+const copySelectionLinkBtn = document.getElementById('copy-selection-link');
+copySelectionLinkBtn.addEventListener('click', async () => {
+  const anchor = state.pendingAnchor;
+  if (!anchor || isRegionAnchor(anchor)) return;
+  popover.hidden = true;
+  if (await copyText(viewerLink(DocAnchors.quoteFragment(anchor)))) flash('Link to selection copied');
+});
 
 document.getElementById('start-comment').addEventListener('click', async () => {
   if (!state.pendingAnchor) return;
@@ -1667,6 +1932,7 @@ function renderHighlights() {
   for (const r of resolved) {
     applyHighlight(doc.body, r.comment, r.startIdx, r.length);
   }
+  paintLinkTarget();
 }
 
 function applyHighlight(root, comment, startIdx, length) {
@@ -1823,8 +2089,14 @@ function renderThread(comment) {
   delBtn.className = 'link-button danger';
   delBtn.textContent = 'Delete';
   delBtn.addEventListener('click', () => deleteComment(comment.id));
+  const linkBtn = document.createElement('button');
+  linkBtn.className = 'secondary';
+  linkBtn.textContent = 'Link';
+  linkBtn.title = 'Copy a link to this comment';
+  linkBtn.addEventListener('click', () => copyCommentLink(comment.id));
   actions.appendChild(replyBtn);
   actions.appendChild(resolveBtn);
+  actions.appendChild(linkBtn);
   if (orphaned) {
     const reattachBtn = document.createElement('button');
     reattachBtn.className = 'secondary';

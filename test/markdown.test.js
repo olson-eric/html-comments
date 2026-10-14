@@ -18,6 +18,14 @@ test('headings, hr, blockquote, code blocks', () => {
   assert.equal(doc('```js\nconst x = 1;\n```'), '<pre><code class="language-js">const x = 1;</code></pre>');
 });
 
+test('document headings get unique GitHub-style ids; comments do not', () => {
+  assert.equal(
+    renderMarkdown('# The `foo` & bar\n## Notes\n## Notes', { breaks: false, headingIds: true }),
+    '<h1 id="the-foo--bar">The <code>foo</code> &amp; bar</h1><h2 id="notes">Notes</h2><h2 id="notes-1">Notes</h2>'
+  );
+  assert.equal(renderMarkdown('## Notes'), '<h2>Notes</h2>');
+});
+
 test('inline: emphasis, code, strikethrough, escaping', () => {
   assert.equal(doc('**b** *i* `c` ~~s~~'), '<p><strong>b</strong> <em>i</em> <code>c</code> <del>s</del></p>');
   assert.equal(doc('<script>alert(1)</script>'), '<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>');

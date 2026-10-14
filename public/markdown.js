@@ -6,11 +6,22 @@
 //   opts.breaks — when true (default), single newlines inside a paragraph or
 //   list item become <br> (chat style, used for comments). When false, wrapped
 //   lines are joined with a space (document style, used for .md files).
+//   opts.headingIds — when true, headings get GitHub-style slug ids so
+//   documents can be linked by section (needs doc-anchors.js).
 (function (global) {
   'use strict';
 
+  const DocAnchors = typeof module !== 'undefined' && module.exports
+    ? require('./doc-anchors.js')
+    : global.DocAnchors;
+
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  }
+
+  // Text content of rendered inline HTML, for heading slugs.
+  function plainText(html) {
+    return html.replace(/<[^>]*>/g, '').replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" })[e]);
   }
 
   // Allow relative URLs and a small scheme allowlist; anything else (javascript:,
@@ -30,6 +41,7 @@
     let text = String(src);
     if (!text.trim()) return '';
     const breaks = !(opts && opts.breaks === false);
+    const slugger = opts && opts.headingIds && DocAnchors ? DocAnchors.createSlugger() : null;
 
     const codeBlocks = [];
     text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
@@ -162,7 +174,10 @@
         }
 
         if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
-          out.push(`<h${m[1].length}>${renderInline(m[2])}</h${m[1].length}>`);
+          const inner = renderInline(m[2]);
+          const id = slugger && slugger.slug(plainText(inner));
+          const idAttr = id ? ` id="${escapeHtml(id)}"` : '';
+          out.push(`<h${m[1].length}${idAttr}>${inner}</h${m[1].length}>`);
           i++;
           continue;
         }

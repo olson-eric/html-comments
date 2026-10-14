@@ -720,7 +720,7 @@ function markdownDocument(f) {
 </style>
 </head>
 <body>
-${renderMarkdown(md, { breaks: false })}
+${renderMarkdown(md, { breaks: false, headingIds: true })}
 </body>
 </html>
 `;
