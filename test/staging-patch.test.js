@@ -51,10 +51,8 @@ test('COMMENT_TEXT_EDITS=off', async (t) => {
     });
   const patch = (cid, body, raw) => send('PATCH', `/api/file/comments/${cid}?path=docs/review`, body, raw);
   // Straight from the store, so soft-deleted comments are included.
-  const comments = async () => {
-    const file = fs.readdirSync(COMMENTS).find((n) => n.endsWith('.json') && n.length === 45);
-    return JSON.parse(fs.readFileSync(path.join(COMMENTS, file), 'utf8')).comments;
-  };
+  const storeFile = path.join(COMMENTS, `${crypto.createHash('sha1').update('docs/review.md').digest('hex')}.json`);
+  const comments = async () => JSON.parse(fs.readFileSync(storeFile, 'utf8')).comments;
   const events = async () => (await (await send('GET', '/api/updates')).json()).events;
 
   const live = await (await send('POST', '/api/file/comments?path=docs/review', { anchor: ANCHOR, text: 'original text' })).json();

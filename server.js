@@ -25,7 +25,7 @@ Environment:
   TRUST_IDENTITY_HEADER Header carrying a verified identity from your auth proxy,
                         e.g. X-Forwarded-Email (default: unset, never trusted)
   REQUIRE_IDENTITY      Set to 1 to reject (401) every request without one valid
-                        email in TRUST_IDENTITY_HEADER, except GET /health (default: off)
+                        email in TRUST_IDENTITY_HEADER, except GET /health (default: 0)
   COMMENT_TEXT_EDITS    Set to off to reject comment PATCH bodies that are not exactly
                         one of resolve/reopen, restore, or reattach (default: on)
   LOG_MODE              Set to counts to log only fixed codes and counts, never a
@@ -70,6 +70,7 @@ const TRUST_IDENTITY_HEADER = String(process.env.TRUST_IDENTITY_HEADER || '').tr
 // unrecognized value stops startup rather than silently leaving a flag off.
 
 // A fixed-code line, written synchronously so it survives an immediate exit.
+// A failed log write must not fail the request that caused it.
 function writeLine(fd, value) {
   try {
     fs.writeSync(fd, JSON.stringify(value) + '\n');
@@ -96,11 +97,7 @@ const LOG_COUNTS = envChoice('LOG_MODE', { '': false, counts: true }, 'invalid_l
 // REQUIRE_IDENTITY=1: identity fails closed. Every request except GET/HEAD of
 // the root /health needs exactly one email-shaped value in
 // TRUST_IDENTITY_HEADER, and that value, unchanged, is the only author.
-const REQUIRE_IDENTITY = envChoice(
-  'REQUIRE_IDENTITY',
-  { '': false, 0: false, false: false, no: false, off: false, 1: true, true: true, yes: true, on: true },
-  'invalid_require_identity'
-);
+const REQUIRE_IDENTITY = envChoice('REQUIRE_IDENTITY', { '': false, 0: false, 1: true }, 'invalid_require_identity');
 if (REQUIRE_IDENTITY && !TRUST_IDENTITY_HEADER) startupFail('identity_header_unset');
 
 // COMMENT_TEXT_EDITS=off: a comment PATCH must be exactly one of resolve or
@@ -137,10 +134,8 @@ const EMAIL_SHAPE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$/;
 // line, one value (no comma), email-shaped, at most 254 characters.
 function verifiedIdentity(req) {
   const values = req.headersDistinct[TRUST_IDENTITY_HEADER];
-  if (!Array.isArray(values) || values.length !== 1) return null;
-  const v = values[0];
-  if (typeof v !== 'string' || !v || v.length > IDENTITY_MAX || !EMAIL_SHAPE.test(v)) return null;
-  return v;
+  if (values?.length !== 1 || values[0].length > IDENTITY_MAX || !EMAIL_SHAPE.test(values[0])) return null;
+  return values[0];
 }
 
 // What a signed-in user's new uploads default to: 'private' (only the
@@ -171,12 +166,8 @@ function homeSlugFor(identity) {
 }
 
 function authorFrom(req, bodyAuthor) {
-  if (REQUIRE_IDENTITY) {
-    // The identity middleware already rejected the request otherwise.
-    const verified = identityFor(req);
-    if (!verified) throw new Error('identity_required');
-    return verified;
-  }
+  // The identity middleware has already refused any request without one.
+  if (REQUIRE_IDENTITY) return identityFor(req);
   const who = identityFor(req) || bodyAuthor;
   return (who || 'Anonymous').toString().slice(0, 80);
 }
@@ -1622,21 +1613,12 @@ router.get(/^\/raw\/(.+)$/, (req, res, next) => {
 
 // Counts mode: a send failure reaches the error boundary as a fresh error
 // carrying only a code, never the original message (which names the file).
-// Once headers are out, or when the client went away, there is nothing to
-// answer: the response is destroyed and nothing is logged.
+// A client that went away needs no answer and no count.
 function sendFileCounted(req, res, next, abs, downloadName) {
   const done = (err) => {
     if (!err) return;
-    const aborted = err.code === 'ECONNABORTED' || err.syscall === 'write' || req.destroyed || res.destroyed;
-    if (res.headersSent || aborted) {
-      if (!aborted) countError('send_file');
-      if (!res.writableEnded) res.destroy();
-      return;
-    }
-    const failure = new Error('send_file');
-    failure.code = 'send_file';
-    failure.status = err.status === 404 || err.code === 'ENOENT' ? 404 : 500;
-    next(failure);
+    if (err.code === 'ECONNABORTED' || err.syscall === 'write') return res.destroy();
+    next(Object.assign(new Error('send_file'), { code: 'send_file', status: err.status === 404 ? 404 : 500 }));
   };
   if (downloadName) res.download(abs, downloadName, done);
   else res.sendFile(abs, done);
@@ -1710,15 +1692,14 @@ if (BASE_PATH) {
 app.use(BASE_PATH || '/', router);
 
 // Map any error to a fixed code and status. Body-parser errors carry a
-// string `type`; router errors such as an undecodable URL parameter carry a
-// 4xx `status` and are the client's fault.
+// string `type`; other 4xx errors, such as an undecodable URL parameter, are
+// the client's too.
 function errorCode(err) {
-  if (err && err.code === 'send_file') return { code: 'send_file', status: err.status === 404 ? 404 : 500 };
-  const status = err && Number(err.status || err.statusCode);
-  if (err && err.type === 'entity.too.large') return { code: 'body_too_large', status: 413 };
-  if (err && typeof err.type === 'string' && status >= 400 && status < 500) return { code: 'body_parse', status: 400 };
-  if (status >= 400 && status < 500) return { code: 'bad_request', status: 400 };
-  return { code: 'internal', status: 500 };
+  const status = Number(err.status) || 500;
+  if (err.code === 'send_file') return { code: 'send_file', status };
+  if (err.type === 'entity.too.large') return { code: 'body_too_large', status: 413 };
+  if (status >= 500 || status < 400) return { code: 'internal', status: 500 };
+  return { code: typeof err.type === 'string' ? 'body_parse' : 'bad_request', status: 400 };
 }
 
 if (LOG_COUNTS) {
