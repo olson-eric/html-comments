@@ -24,6 +24,12 @@ Environment:
   UPLOAD_MAX_BYTES      Max upload size in bytes (default: 20971520 = 20MB)
   TRUST_IDENTITY_HEADER Header carrying a verified identity from your auth proxy,
                         e.g. X-Forwarded-Email (default: unset, never trusted)
+  REQUIRE_IDENTITY      Set to 1 to reject (401) every request without one valid
+                        email in TRUST_IDENTITY_HEADER, except GET /health (default: off)
+  COMMENT_TEXT_EDITS    Set to off to reject comment PATCH bodies that are not exactly
+                        one of resolve/reopen, restore, or reattach (default: on)
+  LOG_MODE              Set to counts to log only fixed codes and counts, never a
+                        body, path, query, identity or stack (default: unset)
   PORT                  Listen port (default: 4747)
   HOST                  Listen host (default: 0.0.0.0)
 `);
@@ -59,6 +65,84 @@ const UPLOAD_MAX_BYTES = (() => {
 // author names on comments, replies, and uploads.
 const TRUST_IDENTITY_HEADER = String(process.env.TRUST_IDENTITY_HEADER || '').trim().toLowerCase();
 
+// ----- Opt-in hardening flags -----
+// Each defaults to today's behavior. Values are parsed strictly: an
+// unrecognized value stops startup rather than silently leaving a flag off.
+
+// A fixed-code line, written synchronously so it survives an immediate exit.
+function writeLine(fd, value) {
+  try {
+    fs.writeSync(fd, JSON.stringify(value) + '\n');
+  } catch {}
+}
+
+function startupFail(code) {
+  writeLine(2, { fatal: code });
+  process.exit(1);
+}
+
+function envChoice(name, choices, failCode) {
+  const raw = String(process.env[name] || '').trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(choices, raw)) startupFail(failCode);
+  return choices[raw];
+}
+
+// LOG_MODE=counts: nothing request-derived (body, path, query, identity,
+// error message or stack) is ever written to stdout or stderr. Errors become
+// fixed codes, answered as {"error":"<code>"} and summed into one
+// {"errors":{...}} line a minute.
+const LOG_COUNTS = envChoice('LOG_MODE', { '': false, counts: true }, 'invalid_log_mode');
+
+// REQUIRE_IDENTITY=1: identity fails closed. Every request except GET/HEAD of
+// the root /health needs exactly one email-shaped value in
+// TRUST_IDENTITY_HEADER, and that value, unchanged, is the only author.
+const REQUIRE_IDENTITY = envChoice(
+  'REQUIRE_IDENTITY',
+  { '': false, 0: false, false: false, no: false, off: false, 1: true, true: true, yes: true, on: true },
+  'invalid_require_identity'
+);
+if (REQUIRE_IDENTITY && !TRUST_IDENTITY_HEADER) startupFail('identity_header_unset');
+
+// COMMENT_TEXT_EDITS=off: a comment PATCH must be exactly one of resolve or
+// reopen, restore, or reattach; nothing can change a comment's text.
+const COMMENT_TEXT_EDITS = envChoice('COMMENT_TEXT_EDITS', { '': true, on: true, off: false }, 'invalid_comment_text_edits');
+
+const errorCounts = new Map();
+function countError(code) {
+  errorCounts.set(code, (errorCounts.get(code) || 0) + 1);
+}
+function flushErrorCounts() {
+  if (!errorCounts.size) return;
+  const errors = Object.fromEntries(errorCounts);
+  errorCounts.clear();
+  writeLine(2, { errors });
+}
+
+if (LOG_COUNTS) {
+  setInterval(flushErrorCounts, 60 * 1000).unref();
+  // Print only a code and exit, so the supervisor restarts a clean process.
+  const fatal = (code) => () => {
+    flushErrorCounts();
+    writeLine(2, { fatal: code });
+    process.exit(1);
+  };
+  process.on('uncaughtException', fatal('uncaught_exception'));
+  process.on('unhandledRejection', fatal('unhandled_rejection'));
+}
+
+const IDENTITY_MAX = 254;
+const EMAIL_SHAPE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$/;
+
+// The raw header, validated but never trimmed or truncated: exactly one header
+// line, one value (no comma), email-shaped, at most 254 characters.
+function verifiedIdentity(req) {
+  const values = req.headersDistinct[TRUST_IDENTITY_HEADER];
+  if (!Array.isArray(values) || values.length !== 1) return null;
+  const v = values[0];
+  if (typeof v !== 'string' || !v || v.length > IDENTITY_MAX || !EMAIL_SHAPE.test(v)) return null;
+  return v;
+}
+
 // What a signed-in user's new uploads default to: 'private' (only the
 // uploader until they share) or 'everyone'. Only meaningful alongside
 // TRUST_IDENTITY_HEADER — anonymous uploads have no owner to be private to,
@@ -68,6 +152,7 @@ const DEFAULT_VISIBILITY =
   String(process.env.DEFAULT_VISIBILITY || '').trim().toLowerCase() === 'everyone' ? 'everyone' : 'private';
 
 function identityFor(req) {
+  if (REQUIRE_IDENTITY) return req.verifiedIdentity || null;
   if (!TRUST_IDENTITY_HEADER) return null;
   const v = req.headers[TRUST_IDENTITY_HEADER];
   const s = (Array.isArray(v) ? v[0] : v || '').toString().trim().slice(0, 80);
@@ -86,6 +171,12 @@ function homeSlugFor(identity) {
 }
 
 function authorFrom(req, bodyAuthor) {
+  if (REQUIRE_IDENTITY) {
+    // The identity middleware already rejected the request otherwise.
+    const verified = identityFor(req);
+    if (!verified) throw new Error('identity_required');
+    return verified;
+  }
   const who = identityFor(req) || bodyAuthor;
   return (who || 'Anonymous').toString().slice(0, 80);
 }
@@ -100,6 +191,7 @@ const BASE_PATH = (() => {
 })();
 
 if (!fs.existsSync(ROOT) || !fs.statSync(ROOT).isDirectory()) {
+  if (LOG_COUNTS) startupFail('html_dir_missing');
   console.error(`html-comments: HTML directory does not exist: ${ROOT}`);
   console.error(`Usage: html-comments [<html-dir>]   (or set HTML_DIR=...)`);
   process.exit(1);
@@ -125,7 +217,9 @@ if (COMMENTS_DIR !== IN_CONTENT_COMMENTS_DIR) {
     for (const f of found) {
       fs.copyFileSync(path.join(IN_CONTENT_COMMENTS_DIR, f), path.join(COMMENTS_DIR, f));
     }
-    if (found.length) {
+    if (found.length && LOG_COUNTS) {
+      writeLine(1, { info: 'imported', files: found.length });
+    } else if (found.length) {
       console.log(`Imported ${found.length} comment file(s) from ${IN_CONTENT_COMMENTS_DIR} into ${COMMENTS_DIR}`);
     }
   }
@@ -136,6 +230,17 @@ if (COMMENTS_DIR !== IN_CONTENT_COMMENTS_DIR) {
 // text/html body isn't consumed before the raw parser sees it.
 const jsonParser = express.json({ limit: '5mb' });
 const isRawUpload = (req) => req.method === 'PUT' && /\/api\/upload\//.test(req.path);
+// First of all middleware, ahead of the body parsers, static files and every
+// route: only GET/HEAD of exactly the root /health (the probes) is exempt.
+if (REQUIRE_IDENTITY) {
+  app.use((req, res, next) => {
+    if (req.path === '/health' && (req.method === 'GET' || req.method === 'HEAD')) return next();
+    const identity = verifiedIdentity(req);
+    if (!identity) return res.status(401).json({ error: 'identity_required' });
+    req.verifiedIdentity = identity;
+    next();
+  });
+}
 app.use((req, res, next) => (isRawUpload(req) ? next() : jsonParser(req, res, next)));
 const router = express.Router();
 
@@ -545,7 +650,8 @@ function recordEvent(kind, f, extra = {}) {
       fs.renameSync(tmp, EVENTS_FILE);
     }
   } catch (e) {
-    console.error(`[events] failed to record: ${e.message}`);
+    if (LOG_COUNTS) countError('event_write');
+    else console.error(`[events] failed to record: ${e.message}`);
   }
 }
 
@@ -1140,7 +1246,26 @@ router.post('/api/file/comments/:cid/complete', (req, res) => {
   res.json({ path: f.doc, file: f.rel, reply, comment });
 });
 
+// COMMENT_TEXT_EDITS=off: the body must be exactly one of {resolved: bool},
+// {anchor: {...}} or {deleted: false}. Returns the rejection code, or null.
+function commentPatchRejection(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return 'patch_shape';
+  if (Object.prototype.hasOwnProperty.call(body, 'text')) return 'text_edits_disabled';
+  const keys = Object.keys(body);
+  if (keys.length !== 1) return 'patch_shape';
+  const value = body[keys[0]];
+  if (keys[0] === 'resolved' && typeof value === 'boolean') return null;
+  if (keys[0] === 'anchor' && value && typeof value === 'object' && !Array.isArray(value)) return null;
+  if (keys[0] === 'deleted' && value === false) return null;
+  return 'patch_shape';
+}
+
 router.patch('/api/file/comments/:cid', (req, res) => {
+  // Checked before anything is looked up, assigned or written.
+  if (!COMMENT_TEXT_EDITS) {
+    const rejection = commentPatchRejection(req.body);
+    if (rejection) return res.status(rejection === 'text_edits_disabled' ? 403 : 400).json({ error: rejection });
+  }
   const f = resolveFile(req.query.path);
   if (!f) return res.status(404).json({ error: 'not found' });
   if (!requireReadable(req, res, f.rel)) return;
@@ -1251,6 +1376,8 @@ function requireUploads(_req, res, next) {
 }
 
 function audit(req, action, detail) {
+  // Counts mode keeps the fixed action name only: no path, size or identity.
+  if (LOG_COUNTS) return writeLine(1, { audit: action });
   console.log(`[audit] ${action} ${detail} by=${identityFor(req) || 'anonymous'} from=${req.ip}`);
 }
 
@@ -1475,7 +1602,7 @@ router.post('/api/archive', requireUploads, (req, res) => {
   res.json({ path: f.doc, file: f.rel, archived: flag });
 });
 
-router.get(/^\/raw\/(.+)$/, (req, res) => {
+router.get(/^\/raw\/(.+)$/, (req, res, next) => {
   let rel;
   try {
     rel = decodeURIComponent(req.params[0]);
@@ -1488,9 +1615,32 @@ router.get(/^\/raw\/(.+)$/, (req, res) => {
   // no permissions; anything that IS a doc kind gets the same gate as the
   // rest of the API so restricted pages can't be fetched by real filename.
   if (fileKind(f.rel) && !canRead(req, f.rel)) return res.status(404).send('not found');
+  if (LOG_COUNTS) return sendFileCounted(req, res, next, f.abs, req.query.download === '1' ? path.basename(f.rel) : null);
   if (req.query.download === '1') return res.download(f.abs, path.basename(f.rel));
   res.sendFile(f.abs);
 });
+
+// Counts mode: a send failure reaches the error boundary as a fresh error
+// carrying only a code, never the original message (which names the file).
+// Once headers are out, or when the client went away, there is nothing to
+// answer: the response is destroyed and nothing is logged.
+function sendFileCounted(req, res, next, abs, downloadName) {
+  const done = (err) => {
+    if (!err) return;
+    const aborted = err.code === 'ECONNABORTED' || err.syscall === 'write' || req.destroyed || res.destroyed;
+    if (res.headersSent || aborted) {
+      if (!aborted) countError('send_file');
+      if (!res.writableEnded) res.destroy();
+      return;
+    }
+    const failure = new Error('send_file');
+    failure.code = 'send_file';
+    failure.status = err.status === 404 || err.code === 'ENOENT' ? 404 : 500;
+    next(failure);
+  };
+  if (downloadName) res.download(abs, downloadName, done);
+  else res.sendFile(abs, done);
+}
 
 // Text formats rendered as standalone HTML pages (what the viewer's iframe loads).
 router.get(/^\/render\/(.+)$/, (req, res) => {
@@ -1559,19 +1709,43 @@ if (BASE_PATH) {
 }
 app.use(BASE_PATH || '/', router);
 
-// Body-parser size rejections come back as JSON like every other API error.
-app.use((err, req, res, next) => {
-  if (err && err.type === 'entity.too.large') {
-    return res.status(413).json({ error: `body too large (limit ${UPLOAD_MAX_BYTES} bytes for uploads)` });
-  }
-  next(err);
-});
+// Map any error to a fixed code and status. Body-parser errors carry a
+// string `type`; router errors such as an undecodable URL parameter carry a
+// 4xx `status` and are the client's fault.
+function errorCode(err) {
+  if (err && err.code === 'send_file') return { code: 'send_file', status: err.status === 404 ? 404 : 500 };
+  const status = err && Number(err.status || err.statusCode);
+  if (err && err.type === 'entity.too.large') return { code: 'body_too_large', status: 413 };
+  if (err && typeof err.type === 'string' && status >= 400 && status < 500) return { code: 'body_parse', status: 400 };
+  if (status >= 400 && status < 500) return { code: 'bad_request', status: 400 };
+  return { code: 'internal', status: 500 };
+}
+
+if (LOG_COUNTS) {
+  // The terminal error boundary, after every parser and route. It never calls
+  // next(err): Express's final handler would print the error and its stack.
+  app.use((err, req, res, _next) => {
+    const { code, status } = errorCode(err);
+    countError(code);
+    if (res.headersSent) return res.destroy();
+    res.status(status).json({ error: code });
+  });
+} else {
+  // Body-parser size rejections come back as JSON like every other API error.
+  app.use((err, req, res, next) => {
+    if (err && err.type === 'entity.too.large') {
+      return res.status(413).json({ error: `body too large (limit ${UPLOAD_MAX_BYTES} bytes for uploads)` });
+    }
+    next(err);
+  });
+}
 
 if (require.main === module) {
   app.listen(PORT, HOST, () => {
+    if (LOG_COUNTS) return writeLine(1, { info: 'listening' });
     console.log(`html-comments serving ${ROOT}`);
     console.log(`→ http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}${BASE_PATH ? BASE_PATH + '/' : ''}`);
   });
 }
 
-module.exports = { app, resolveFile, docPathFor, BASE_PATH };
+module.exports = { app, resolveFile, docPathFor, BASE_PATH, flushErrorCounts };
