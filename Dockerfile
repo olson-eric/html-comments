@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Pinned by digest so the base image can't change underneath the tag;
 # Dependabot bumps the digest when node:22-alpine is updated.
 FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
@@ -11,7 +12,13 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# Optional: build with `--secret id=npmrc,src=<path to .npmrc>` to install
+# through a private registry or proxy. The file is mounted only for this step
+# and never stored in a layer; the cache mount keeps npm's download cache out
+# of the image too. Without the secret, packages come from the public registry.
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev
 
 COPY server.js LICENSE README.md ./
 COPY public/ ./public/

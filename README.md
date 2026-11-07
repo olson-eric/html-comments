@@ -343,6 +343,16 @@ Chart extension points for common setups:
 
 Remember there is no built-in authentication (see below) — keep deployments on a private network or behind an authenticating proxy.
 
+### Building behind a private npm registry
+
+If npm must go through a private registry or proxy that needs credentials, pass an `.npmrc` (e.g. `registry=<url>` plus that registry's auth line) as a build secret:
+
+```bash
+docker build --secret id=npmrc,src="$HOME/.npmrc" -t html-comments .
+```
+
+The file is mounted only for the `npm ci` step and is never stored in an image layer. npm fetches the lockfile's packages from the configured registry and still checks their integrity hashes, so the installed dependencies are identical. The secret is optional: without it, packages come from the public registry as before.
+
 ### Writable deployments and agent access
 
 To enable HTTP publishing (uploads, rename, archive) on a hosted deployment:

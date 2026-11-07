@@ -24,3 +24,59 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+
+  docker:
+    # The image runs on node:22-alpine (see Dockerfile).
+    name: docker (node 22)
+    runs-on: ubuntu-latest
+    env:
+      # A dummy npm token that must never reach the image. Search for all of
+      # it: the bare word MARKER appears in Node's own Unicode data.
+      MARKER: MARKER-not-a-real-token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build without the npmrc secret
+        run: docker build -t html-comments:plain .
+      - name: Serve /health
+        run: |
+          docker run -d --name plain -p 4747:4747 html-comments:plain
+          status=
+          for _ in $(seq 30); do
+            status=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4747/health || true)
+            [ "$status" = 200 ] && break
+            sleep 1
+          done
+          docker stop plain
+          [ "$status" = 200 ] || { docker logs plain; exit 1; }
+      # Start the next build from an empty build cache so npm ci really runs
+      # with the secret instead of reusing the layer and download cache above.
+      - name: Clear the build cache
+        run: docker builder prune -af
+      - name: Build with a dummy npmrc secret
+        run: |
+          printf '%s\n' \
+            'registry=https://registry.npmjs.org/' \
+            "//registry.npmjs.org/:_authToken=$MARKER" \
+            > "$RUNNER_TEMP/npmrc"
+          docker build --secret id=npmrc,src="$RUNNER_TEMP/npmrc" -t html-comments:secret .
+      - name: Check the secret never reaches the image
+        run: |
+          image=html-comments:secret
+          # /root is mode 0700, so check as root; as node the test can't see in.
+          docker run --rm --user root "$image" sh -c 'test ! -e /root/.npmrc'
+          if docker history --no-trunc "$image" | grep -F "$MARKER"; then
+            echo "MARKER found in the image history"; exit 1
+          fi
+          # docker save may write gzip-compressed layers, which a plain grep
+          # can't see into, so search every blob's decompressed contents.
+          dir="$RUNNER_TEMP/image"
+          mkdir "$dir"
+          docker save "$image" | tar -x -C "$dir"
+          count() {
+            find "$dir" -type f | while read -r f; do
+              gzip -dc "$f" 2>/dev/null || cat "$f"
+            done | grep -a -c -F "$1" || true
+          }
+          # Control: the search must find a file known to be in the image.
+          [ "$(count '"name": "express"')" -gt 0 ]
+          [ "$(count "$MARKER")" = 0 ] || { echo "MARKER found in the saved image"; exit 1; }
