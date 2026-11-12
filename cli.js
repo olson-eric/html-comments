@@ -8,6 +8,8 @@ const DEFAULT_HEADERS = process.env.HTML_COMMENTS_TOKEN
   ? { Authorization: `Bearer ${process.env.HTML_COMMENTS_TOKEN}` }
   : {};
 const DEFAULT_AUTHOR = process.env.HTML_COMMENTS_AUTHOR || 'agent';
+// Fits under common agent tool-call limits; agents re-run poll to keep waiting.
+const DEFAULT_POLL_TIMEOUT = 60;
 const COMMANDS = new Set(['serve', 'list', 'show', 'queue', 'poll', 'ack', 'reply', 'resolve', 'publish', 'updates', 'open', 'help']);
 
 function output(value) {
@@ -92,7 +94,7 @@ function help() {
       'html-comments list [--status open|resolved|uncommented|all]': 'List documents',
       'html-comments show <doc> [--content]': 'Show a document and its threads, optionally including rendered HTML',
       'html-comments queue': 'Non-destructively list queued feedback',
-      'html-comments poll [--path doc] [--timeout seconds] [--lease seconds]': 'Lease a feedback batch',
+      'html-comments poll [--path doc] [--timeout seconds] [--lease seconds]': `Lease a feedback batch, waiting up to ${DEFAULT_POLL_TIMEOUT}s by default; with --path and nothing queued, return that page's open comments`,
       'html-comments ack <job-id> <lease-id>': 'Acknowledge and remove a completed feedback batch',
       'html-comments reply <doc> <comment-id> <text> [--resolve] [--stdin]': 'Reply, optionally resolving atomically',
       'html-comments resolve <doc> <comment-id>': 'Resolve a comment thread',
@@ -180,25 +182,31 @@ async function main() {
 
   if (command === 'poll') {
     const doc = takeOption(args, '--path', null);
-    const timeoutValue = takeOption(args, '--timeout', null);
+    const timeoutValue = takeOption(args, '--timeout', String(DEFAULT_POLL_TIMEOUT));
     const leaseValue = takeOption(args, '--lease', '300');
     if (args.length) throw new Error(`unknown argument: ${args[0]}`);
-    const deadline = timeoutValue === null ? null : Date.now() + Math.max(1, Number(timeoutValue)) * 1000;
-    if (timeoutValue !== null && !Number.isFinite(Number(timeoutValue))) throw new Error('--timeout must be a number');
+    if (!Number.isFinite(Number(timeoutValue))) throw new Error('--timeout must be a number');
     if (!Number.isFinite(Number(leaseValue)) || Number(leaseValue) < 1) throw new Error('--lease must be a positive number');
+    const deadline = Date.now() + Math.max(1, Number(timeoutValue)) * 1000;
     if (process.stderr.isTTY) process.stderr.write('Waiting for review feedback…\n');
-    while (deadline === null || Date.now() < deadline) {
-      const remaining = deadline === null ? 30 : Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
+    while (Date.now() < deadline) {
+      const remaining = Math.max(1, Math.ceil((deadline - Date.now()) / 1000));
       const result = await request(server, '/api/agent/poll', {}, {
         path: doc,
         timeout: Math.min(30, remaining),
         lease: leaseValue,
       });
-      if (result) {
-        // The structured job is sufficient; omit the server's duplicate prose prompt.
+      // The structured review is sufficient; omit the server's duplicate prose prompt.
+      if (result?.job) {
         return output({
           review: result.job,
           next_step: 'Apply each comment, then reply and resolve its thread. Finally run `html-comments ack <job-id> <lease-id>`.',
+        });
+      }
+      if (result?.review) {
+        return output({
+          review: result.review,
+          next_step: 'Apply each comment, then reply and resolve its thread. Nothing was queued, so there is nothing to ack.',
         });
       }
     }

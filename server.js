@@ -716,9 +716,11 @@ function requestedLeaseSeconds(value) {
 
 function agentPrompt(job) {
   return [
-    `Review feedback was sent for ${job.path} (${job.file}).`,
+    `${job.lease ? 'Review feedback was sent for' : 'Open comments on'} ${job.path} (${job.file}).`,
     'Address each comment below. After making changes, reply to each thread and resolve it through the html-comments API.',
-    `When finished, acknowledge this job with POST /api/agent/jobs/${job.id}/ack and { "leaseId": "${job.lease.id}" }.`,
+    ...(job.lease
+      ? [`When finished, acknowledge this job with POST /api/agent/jobs/${job.id}/ack and { "leaseId": "${job.lease.id}" }.`]
+      : ['Nothing was queued, so there is no job to acknowledge.']),
     'Then poll /api/agent/poll again when ready for another review round.',
     '',
     JSON.stringify(job.comments, null, 2),
@@ -962,18 +964,27 @@ router.get('/api/updates', (req, res) => {
 // unleased review exists, otherwise waits until a reviewer sends one. A 204
 // timeout is intentionally easy for agents to retry. The returned lease must
 // be acknowledged; if it expires first, the job becomes available again.
+// A path-specific poll with nothing queued returns the page's open comments
+// at once, unleased, unless another agent holds a lease on that page.
 router.get('/api/agent/poll', (req, res) => {
   const identity = identityFor(req);
-  let file = null;
+  let f = null;
   if (req.query.path !== undefined) {
-    const f = resolveFile(req.query.path);
+    f = resolveFile(req.query.path);
     if (!f) return res.status(404).json({ error: 'not found' });
     if (!requireReadable(req, res, f.rel)) return;
-    file = f.rel;
   }
+  const file = f ? f.rel : null;
   const leaseSeconds = requestedLeaseSeconds(req.query.lease);
   const immediate = leaseAgentJob(identity, leaseSeconds, file);
   if (immediate) return res.json({ job: immediate, prompt: agentPrompt(immediate) });
+  if (f && !readAgentQueue().some((job) => job.file === f.rel && agentCanReceive(job, identity))) {
+    const comments = activeComments(readComments(f.rel)).filter((comment) => !comment.resolved);
+    if (comments.length) {
+      const review = { path: f.doc, file: f.rel, comments };
+      return res.json({ job: null, review, prompt: agentPrompt(review) });
+    }
+  }
 
   const requested = Number(req.query.timeout);
   const timeoutSeconds = Number.isFinite(requested) ? Math.max(1, Math.min(30, requested)) : 25;

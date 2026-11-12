@@ -61,6 +61,11 @@ test('agent CLI supports the review workflow', async (t) => {
   const shown = await run('show', 'review', '--content');
   assert.match(shown.content, /<h1 id="review">Review<\/h1>/);
 
+  const unqueued = await run('poll', '--path', 'review', '--timeout', '2');
+  assert.strictEqual(unqueued.review.comments[0].id, comment.id);
+  assert.strictEqual(unqueued.review.lease, undefined);
+  assert.match(unqueued.next_step, /nothing to ack/);
+
   await fetch(`${base}/api/agent/queue?path=review`, { method: 'POST' });
   const queued = await run('queue');
   assert.strictEqual(queued.count, 1);
