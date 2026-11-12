@@ -12,6 +12,7 @@ delete process.env.TRUST_IDENTITY_HEADER;
 
 fs.writeFileSync(path.join(ROOT, 'review.md'), '# Review\n\nSome copy.\n');
 fs.writeFileSync(path.join(ROOT, 'other.md'), '# Other\n\nMore copy.\n');
+fs.writeFileSync(path.join(ROOT, 'clean.md'), '# Clean\n\nNo comments.\n');
 
 const { app } = require('../server.js');
 
@@ -148,6 +149,32 @@ test('review batches wake agents and remain durable until polled', async (t) => 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ leaseId: remaining.job.lease.id }),
+    });
+  });
+
+  await t.test('a path-specific poll with nothing queued returns open comments', async () => {
+    const res = await fetch(`${base}/api/agent/poll?path=review&timeout=1`);
+    assert.strictEqual(res.status, 200);
+    const payload = await res.json();
+    assert.strictEqual(payload.job, null);
+    assert.strictEqual(payload.review.path, 'review');
+    assert.deepStrictEqual(payload.review.comments.map((comment) => comment.text), ['First change', 'Second change']);
+    assert.strictEqual(payload.review.lease, undefined);
+    assert.doesNotMatch(payload.prompt, /\/ack/);
+    assert.strictEqual((await (await fetch(`${base}/api/agent/queue`)).json()).count, 0);
+
+    const clean = await fetch(`${base}/api/agent/poll?path=clean&timeout=1`);
+    assert.strictEqual(clean.status, 204);
+
+    // Another agent holds the page's queued job, so its comments are not handed out twice.
+    await queue();
+    const leased = await (await fetch(`${base}/api/agent/poll?path=review&timeout=1&lease=10`)).json();
+    const blocked = await fetch(`${base}/api/agent/poll?path=review&timeout=1`);
+    assert.strictEqual(blocked.status, 204);
+    await fetch(`${base}/api/agent/jobs/${leased.job.id}/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leaseId: leased.job.lease.id }),
     });
   });
 

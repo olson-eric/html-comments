@@ -129,7 +129,7 @@ html-comments                                      # live dashboard
 html-comments list --status open
 html-comments show docs/spec --content
 html-comments queue                                # non-destructive inspection
-html-comments poll --path docs/spec --lease 300    # lease this document
+html-comments poll --path docs/spec --lease 300    # lease this document, or get its open comments
 html-comments reply docs/spec <cid> "Applied" --resolve
 printf 'Applied the requested changes\n' | html-comments reply docs/spec <cid> --stdin --resolve
 html-comments ack <job-id> <lease-id>               # remove completed job
@@ -138,9 +138,13 @@ html-comments updates --since <ISO-time>
 ```
 
 Commands write structured JSON to stdout. Long-poll status is written only to
-stderr, so stdout remains safe to pipe into `jq`. Use `html-comments --help`
-for the complete command reference. The original server entry point remains
-available as `node server.js [<html-dir>]`.
+stderr, so stdout remains safe to pipe into `jq`. `poll` waits at most 60
+seconds by default (`--timeout` changes it) and then prints
+`{ "status": "timeout" }`, so an agent's tool call never hangs; run it again to
+keep waiting. With `--path` and nothing queued for that document, `poll`
+returns its open comments right away, without a lease or anything to ack. Use
+`html-comments --help` for the complete command reference. The original server
+entry point remains available as `node server.js [<html-dir>]`.
 
 ### HTTP API
 
@@ -213,7 +217,7 @@ returned job and lease IDs. An expired lease makes the same job pollable again.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/api/agent/queue` | Non-destructively list accessible queued and leased review batches. |
-| `GET` | `/api/agent/poll?path=docs/spec&timeout=25&lease=300` | Wait up to 30 seconds for and lease a review batch. With `path`, only that document is eligible; otherwise the oldest accessible batch is leased. Leases may be 1–3600 seconds. |
+| `GET` | `/api/agent/poll?path=docs/spec&timeout=25&lease=300` | Wait up to 30 seconds for and lease a review batch. With `path`, only that document is eligible; otherwise the oldest accessible batch is leased. Leases may be 1–3600 seconds. When `path` has nothing queued, its open comments return at once as `{ job: null, review: { path, file, comments }, prompt }`, with no lease to ack; if another agent holds a lease on that document, the poll waits instead. |
 | `POST` | `/api/agent/queue?path=...` | Bundle all open comments on a document and wake a waiting agent. Repeated sends for the same document/recipient are coalesced. |
 | `POST` | `/api/agent/jobs/:jobId/ack` | With `{ leaseId }`, acknowledge and remove a completed leased batch. |
 | `GET` | `/api/agent/status?path=...` | Report queued batches and whether an agent is currently waiting. |
