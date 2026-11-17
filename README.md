@@ -23,6 +23,8 @@ npx html-comments serve /path/to/your/html
 
 Then open `http://localhost:4747` and you'll see a file tree. Click a file to open it in the viewer, select text or drag a box on an image/PDF page, and leave comments.
 
+In the viewer, the comment sidebar's **Sort** menu orders threads by document order, newest first, oldest first, or latest activity (newest comment or reply). Your choice is remembered.
+
 Click a folder to open a view of just that folder (`/?folder=docs/specs`, with breadcrumbs back up; the ▸ twisty still expands it inline). Every folder view has a **Sort** menu: name, latest activity (newest of the last edit and the last comment or reply, rolled up to folders), recently updated, or open comments. Your choice is remembered.
 
 ## URLs
@@ -96,7 +98,7 @@ usually look best with it left off.
 - `quote` — the literal selected text
 - `contextBefore` / `contextAfter` — 40 chars on either side
 
-When a document is republished, the server re-anchors each thread against the new rendered text using exact quote/context matching, whitespace-normalized matching, then a conservative fuzzy fallback. It updates `startIdx`/`length` but keeps the original quote and context as an audit trail. If the text is gone, the anchor gets `stale: true` and `staleSince`; the viewer shows a **text changed** badge instead of silently dropping the highlight. Reviewers can re-attach the thread to newly selected text, which moves the old anchor into `previousAnchors`. For markdown, anchors index into the rendered text; for JSON and JSONL, they index into the displayed source text.
+When a document is republished, the server re-anchors each thread against the new rendered text using exact quote/context matching, whitespace-normalized matching, then a conservative fuzzy fallback. It updates `startIdx`/`length` but keeps the original quote and context as an audit trail. If the text is gone, the anchor gets `stale: true` and `staleSince`; the viewer shows a **text changed** badge instead of silently dropping the highlight, and puts a dashed **removed text** marker in the document where the text most likely was (right after the longest surviving piece of its preceding context, or before its following context, else at its old offset); clicking either the marker or the thread jumps between them. Reviewers can re-attach the thread to newly selected text, which moves the old anchor into `previousAnchors`. For markdown, anchors index into the rendered text; for JSON and JSONL, they index into the displayed source text.
 
 **Image** comments are anchored to a rectangular region, stored as fractions of the image size:
 

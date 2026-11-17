@@ -751,6 +751,11 @@ button.crumb-dir:hover { background: var(--row-hover); }
   flex-shrink: 0;
 }
 .sidebar-header h2 { margin: 0; font-size: 1rem; }
+.sidebar-header { flex-wrap: wrap; row-gap: 0.5rem; }
+/* Filter and sort share a full-width row below the title and close button. */
+.sidebar-controls { order: 1; flex-basis: 100%; display: flex; gap: 0.4rem; }
+.sidebar-controls select { flex: 1; min-width: 0; }
+.sidebar-controls #filter { flex: 0 1 auto; }
 #close-comments { padding: 0.2rem 0.5rem; font-size: 1.1rem; }
 #comment-count {
   display: inline-block;

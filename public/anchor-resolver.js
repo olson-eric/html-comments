@@ -171,7 +171,35 @@
     return fuzzyMatch(fullText, anchor);
   }
 
-  const api = { resolveAnchor };
+  // For a text anchor whose quote is gone, find the point in the current text
+  // where it most likely used to be: right after the longest surviving piece
+  // of its preceding context, or right before the longest surviving piece of
+  // its following context, nearest the original offset; else that offset.
+  function nearestPosition(fullText, anchor) {
+    if (!anchor || typeof anchor.startIdx !== 'number') return null;
+    const origin = Math.max(0, Math.min(fullText.length, anchor.startIdx));
+    const before = typeof anchor.contextBefore === 'string' ? anchor.contextBefore : '';
+    const after = typeof anchor.contextAfter === 'string' ? anchor.contextAfter : '';
+    for (const len of [40, 24, 16, 10]) {
+      const candidates = [];
+      if (before.length >= len) {
+        const chunk = before.slice(-len);
+        for (const at of occurrencesOf(fullText, chunk)) candidates.push(at + chunk.length);
+      }
+      if (after.length >= len) {
+        for (const at of occurrencesOf(fullText, after.slice(0, len))) candidates.push(at);
+      }
+      if (candidates.length) {
+        const startIdx = candidates.reduce((best, at) =>
+          Math.abs(at - origin) < Math.abs(best - origin) ? at : best
+        );
+        return { startIdx, method: 'context' };
+      }
+    }
+    return { startIdx: origin, method: 'position' };
+  }
+
+  const api = { resolveAnchor, nearestPosition };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else global.AnchorResolver = api;
 })(typeof window !== 'undefined' ? window : globalThis);
