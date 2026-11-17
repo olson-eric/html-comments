@@ -756,8 +756,11 @@ function buildFolderMenu(menu, node, stack) {
     });
     head.appendChild(back);
   }
-  const title = document.createElement('span');
+  // The title opens this folder's index (the file browser's folder view).
+  const title = document.createElement('a');
   title.className = 'folder-menu-title';
+  title.href = node.path ? `./?folder=${encodeURIComponent(node.path)}` : './';
+  title.title = 'Open folder index';
   title.textContent = node.name || 'root';
   head.appendChild(title);
   menu.appendChild(head);

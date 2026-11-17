@@ -448,7 +448,10 @@ button.crumb-dir:hover { background: var(--row-hover); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--accent);
+  text-decoration: none;
 }
+.folder-menu-title:hover { text-decoration: underline; }
 .folder-menu-list {
   overflow-y: auto;
   padding: 0.25rem;
