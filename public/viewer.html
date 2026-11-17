@@ -123,12 +123,20 @@
       <aside class="sidebar" id="comment-sidebar" aria-label="Comments">
         <div class="sidebar-header">
           <h2>Comments</h2>
-          <select id="filter">
-            <option value="open">Open</option>
-            <option value="all">All</option>
-            <option value="resolved">Resolved</option>
-            <option value="deleted">Deleted</option>
-          </select>
+          <div class="sidebar-controls">
+            <select id="filter" aria-label="Show">
+              <option value="open">Open</option>
+              <option value="all">All</option>
+              <option value="resolved">Resolved</option>
+              <option value="deleted">Deleted</option>
+            </select>
+            <select id="comment-sort" aria-label="Sort comments">
+              <option value="position">Document order</option>
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="activity">Latest activity</option>
+            </select>
+          </div>
           <button id="close-comments" class="secondary" type="button" aria-label="Collapse comments" title="Collapse comments">×</button>
         </div>
         <div class="agent-dispatch">

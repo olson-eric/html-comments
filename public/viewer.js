@@ -573,6 +573,13 @@ filterSelect.addEventListener('change', async () => {
   if (filterSelect.value === 'deleted') await loadDeletedComments();
   renderSidebar();
 });
+const commentSortSelect = document.getElementById('comment-sort');
+commentSortSelect.value = localStorage.getItem('hc:commentSort') || 'position';
+if (!commentSortSelect.value) commentSortSelect.value = 'position';
+commentSortSelect.addEventListener('change', () => {
+  localStorage.setItem('hc:commentSort', commentSortSelect.value);
+  renderSidebar();
+});
 sendToAgentBtn.addEventListener('click', dispatchToAgent);
 
 bootstrap();
@@ -1117,6 +1124,10 @@ function injectFrameHooks() {
     svg .hc-highlight.hc-resolved { fill: inherit; stroke: rgba(150, 150, 150, 0.45); }
     svg .hc-highlight.hc-active { stroke: rgba(255, 152, 0, 0.9); }
     img { cursor: crosshair; }
+    .hc-nearest { display: inline-block; margin: 0 4px; padding: 0 5px; border: 1.5px dashed #dc2626; border-radius: 999px; background: rgba(254, 226, 226, 0.85); color: #991b1b; font: 600 10px/1.5 system-ui, sans-serif; text-indent: 0; vertical-align: 0.15em; cursor: pointer; user-select: none; }
+    .hc-nearest::after { content: 'removed text'; }
+    .hc-nearest.hc-resolved { border-color: rgba(120, 120, 120, 0.6); background: rgba(220, 220, 220, 0.6); color: #555; }
+    .hc-nearest.hc-active { border-style: solid; box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.25); }
     .hc-image-region { position: fixed; z-index: 2147483646; box-sizing: border-box; border: 2px solid rgba(255, 152, 0, 0.9); background: rgba(255, 213, 79, 0.25); border-radius: 2px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
     .hc-image-region:hover { background: rgba(255, 213, 79, 0.4); }
     .hc-image-region.hc-resolved { border-color: rgba(130, 130, 130, 0.55); background: rgba(200, 200, 200, 0.15); }
@@ -1178,7 +1189,7 @@ function injectFrameHooks() {
         return;
       }
     }
-    const span = e.target.closest && e.target.closest('.hc-highlight');
+    const span = e.target.closest && e.target.closest('.hc-highlight, .hc-nearest');
     if (span) {
       const cid = span.dataset.commentId;
       setActiveComment(cid, { scrollSidebar: true });
@@ -1890,6 +1901,7 @@ function clearHighlights() {
     while (span.firstChild) parent.insertBefore(span.firstChild, span);
     parent.removeChild(span);
   }
+  doc.querySelectorAll('.hc-nearest').forEach((el) => el.remove());
   doc.body.normalize();
 }
 
@@ -1903,6 +1915,7 @@ function renderHighlights() {
   const hideResolved = hideResolvedToggle.checked;
   const fullText = collectText(doc.body);
   const resolved = [];
+  const nearestMarkers = [];
   for (const c of state.comments) {
     if (hideResolved && c.resolved) continue;
     if (isRegionAnchor(c.anchor)) {
@@ -1925,6 +1938,9 @@ function renderHighlights() {
     }
     const r = c.anchor.stale ? null : AnchorResolver.resolveAnchor(fullText, c.anchor);
     c._anchorOrphaned = !r;
+    const nearest = r ? null : AnchorResolver.nearestPosition(fullText, c.anchor);
+    c._nearestIdx = nearest ? nearest.startIdx : undefined;
+    if (nearest) nearestMarkers.push({ comment: c, startIdx: nearest.startIdx });
     if (!r) continue;
     resolved.push({ comment: c, startIdx: r.startIdx, length: r.length });
   }
@@ -1932,7 +1948,37 @@ function renderHighlights() {
   for (const r of resolved) {
     applyHighlight(doc.body, r.comment, r.startIdx, r.length);
   }
+  // Markers add no text, so the offsets above stay valid while inserting them.
+  for (const m of nearestMarkers) insertNearestMarker(doc.body, m.comment, m.startIdx);
   paintLinkTarget();
+}
+
+// A comment whose text was removed gets a small marker where that text most
+// likely was, so readers can still see roughly what it was about.
+function insertNearestMarker(root, comment, idx) {
+  const doc = root.ownerDocument;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  let total = 0;
+  let target = null;
+  let offset = 0;
+  let n;
+  while ((n = walker.nextNode())) {
+    const end = total + n.nodeValue.length;
+    target = n;
+    offset = Math.min(n.nodeValue.length, Math.max(0, idx - total));
+    if (idx < end) break;
+    total = end;
+  }
+  const marker = doc.createElement('span');
+  marker.className = 'hc-nearest' + (comment.resolved ? ' hc-resolved' : '');
+  marker.dataset.commentId = comment.id;
+  marker.title = `Commented text was removed: “${truncate(comment.anchor.quote || '', 140)}”`;
+  if (!target) return root.appendChild(marker);
+  // Text inside SVG, scripts, or form fields can't host an HTML element;
+  // put the marker just before that element instead.
+  const host = target.parentNode.closest('svg, script, style, textarea, title');
+  if (host) return host.parentNode.insertBefore(marker, host);
+  target.parentNode.insertBefore(marker, offset ? target.splitText(offset) : target);
 }
 
 function applyHighlight(root, comment, startIdx, length) {
@@ -1992,7 +2038,7 @@ function renderSidebar() {
   let comments = filter === 'deleted' ? [...state.deletedComments] : [...state.comments];
   if (filter === 'open') comments = comments.filter((c) => !c.resolved);
   if (filter === 'resolved') comments = comments.filter((c) => c.resolved);
-  comments.sort((a, b) => anchorSortKey(a.anchor) - anchorSortKey(b.anchor));
+  comments.sort(compareComments);
   if (!comments.length) {
     const empty = document.createElement('div');
     empty.className = 'muted empty';
@@ -2046,6 +2092,8 @@ function renderThread(comment) {
       ? isPdfDoc()
         ? 'The selected page is no longer in this version of the PDF, so there is no region to show.'
         : 'The selected image is no longer in this version of the document, so there is no region to show.'
+      : typeof comment._nearestIdx === 'number'
+      ? 'The selected text is no longer in this version of the document. A dashed “removed text” marker shows where it most likely was.'
       : 'The selected text is no longer in this version of the document, so there is no highlight to show.';
     wrap.appendChild(notice);
   }
@@ -2140,9 +2188,28 @@ function openReplyBox(threadEl, commentId) {
   });
 }
 
-function anchorSortKey(anchor) {
+function positionSortKey(comment) {
+  const anchor = comment.anchor;
   if (isRegionAnchor(anchor)) return (anchor.pageNumber || anchor.imageIndex || 0) * 1e9 + anchor.y * 1e6 + anchor.x * 1e3;
+  // A comment whose text is gone sorts where its nearest-position marker sits.
+  if (typeof comment._nearestIdx === 'number') return comment._nearestIdx;
   return anchor && typeof anchor.startIdx === 'number' ? anchor.startIdx : 0;
+}
+
+function lastActivity(comment) {
+  return [comment.createdAt, ...(comment.replies || []).map((r) => r.createdAt)]
+    .filter(Boolean).sort().pop() || '';
+}
+
+// ISO timestamps compare correctly as strings; ties fall back to document order.
+function compareComments(a, b) {
+  const byPosition = positionSortKey(a) - positionSortKey(b);
+  switch (commentSortSelect.value) {
+    case 'newest': return (b.createdAt || '').localeCompare(a.createdAt || '') || byPosition;
+    case 'oldest': return (a.createdAt || '').localeCompare(b.createdAt || '') || byPosition;
+    case 'activity': return lastActivity(b).localeCompare(lastActivity(a)) || byPosition;
+    default: return byPosition;
+  }
 }
 
 function setActiveComment(commentId, opts = {}) {
@@ -2170,9 +2237,9 @@ function setActiveComment(commentId, opts = {}) {
   }
   const doc = frame.contentDocument;
   if (doc && !isImageDoc() && !isPdfDoc()) {
-    doc.querySelectorAll('.hc-highlight.hc-active, .hc-image-region.hc-active').forEach((el) => el.classList.remove('hc-active'));
+    doc.querySelectorAll('.hc-highlight.hc-active, .hc-nearest.hc-active, .hc-image-region.hc-active').forEach((el) => el.classList.remove('hc-active'));
     if (commentId) {
-      const target = doc.querySelector(`.hc-highlight[data-comment-id="${commentId}"], .hc-image-region[data-comment-id="${commentId}"]`);
+      const target = doc.querySelector(`.hc-highlight[data-comment-id="${commentId}"], .hc-nearest[data-comment-id="${commentId}"], .hc-image-region[data-comment-id="${commentId}"]`);
       if (target) {
         target.classList.add('hc-active');
         if (opts.scrollFrame) {
