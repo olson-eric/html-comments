@@ -25,7 +25,7 @@ Then open `http://localhost:4747` and you'll see a file tree. Click a file to op
 
 In the viewer, the comment sidebar's **Sort** menu orders threads by document order, newest first, oldest first, or latest activity (newest comment or reply). Your choice is remembered.
 
-Click a folder to open a view of just that folder (`/?folder=docs/specs`, with breadcrumbs back up; the ▸ twisty still expands it inline). Every folder view has a **Sort** menu: name, latest activity (newest of the last edit and the last comment or reply, rolled up to folders), recently updated, or open comments. Your choice is remembered.
+Click a folder to open its index page, a view of just that folder (`/?folder=docs/specs`, with breadcrumbs back up; the ▸ twisty still expands it inline). In the viewer, clicking a folder in the path opens a dropdown of its pages, and the folder name at the top of that dropdown links to the same index page. Every folder view has a **Sort** menu: name, latest activity (newest of the last edit and the last comment or reply, rolled up to folders), recently updated, or open comments. Your choice is remembered.
 
 ## URLs
 
