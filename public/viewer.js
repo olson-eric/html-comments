@@ -124,6 +124,8 @@ const editorPreview = document.getElementById('editor-preview');
 const editorSave = document.getElementById('editor-save');
 const editorCancel = document.getElementById('editor-cancel');
 let editorOriginal = '';
+// Reading position when the editor opened, restored after a save reloads the frame.
+let editorFrameScroll = null;
 let editorModifiedAt = null;
 let previewTimer = null;
 
@@ -261,6 +263,49 @@ function headingInView(doc) {
 
 function documentHeadings(doc) {
   return Array.from(doc.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+}
+
+// Where the reader is in the framed document, so a reload (an edit on disk or
+// a save from the editor) puts them back in the same section instead of at
+// the top. The section heading is found again by id; if it was renamed, by
+// its position when the outline kept its length, else by its closest text.
+// Edits above it then don't shift what's on screen.
+let pendingFrameScroll = null;
+
+function captureFrameScroll() {
+  const doc = frameDocument();
+  if (!doc) return null;
+  const headings = documentHeadings(doc);
+  const heading = headingInView(doc);
+  return {
+    scrollY: doc.defaultView.scrollY,
+    heading: heading && {
+      id: heading.id,
+      index: headings.indexOf(heading),
+      count: headings.length,
+      top: heading.getBoundingClientRect().top,
+    },
+  };
+}
+
+function restoreFrameScroll(saved) {
+  const doc = frameDocument();
+  if (!doc || !saved) return;
+  const win = doc.defaultView;
+  if (saved.heading) {
+    const headings = documentHeadings(doc);
+    let heading = headings.find((h) => h.id === saved.heading.id);
+    if (!heading && headings.length === saved.heading.count) heading = headings[saved.heading.index];
+    if (!heading) {
+      const match = DocAnchors.matchHeading(saved.heading.id, headings.map((h) => ({ id: h.id, text: h.textContent })));
+      heading = match && headings[match.index];
+    }
+    if (heading) {
+      win.scrollBy(0, heading.getBoundingClientRect().top - saved.heading.top);
+      return;
+    }
+  }
+  win.scrollTo(0, saved.scrollY);
 }
 
 // ----- Anchor links -----
@@ -618,6 +663,8 @@ async function bootstrap() {
       applyDarkPage();
       renderHighlights();
       renderSidebar();
+      restoreFrameScroll(pendingFrameScroll);
+      pendingFrameScroll = null;
       applyPendingLocationHash();
     });
     frame.src = docUrl();
@@ -976,8 +1023,9 @@ async function pollDocument() {
     if (isImageDoc()) {
       pageImage.src = `${docUrl()}?_t=${Date.now()}`;
     } else if (isPdfDoc()) {
-      setupPdfMode(`${docUrl()}?_t=${Date.now()}`);
+      setupPdfMode(`${docUrl()}?_t=${Date.now()}`, pdfStage.scrollTop);
     } else {
+      pendingFrameScroll = captureFrameScroll();
       frame.src = `${docUrl()}?_t=${Date.now()}`;
     }
   } catch {}
@@ -996,6 +1044,7 @@ async function openEditor() {
     return;
   }
   editorModifiedAt = state.meta.modifiedAt;
+  editorFrameScroll = captureFrameScroll();
   editorSource.value = editorOriginal;
   editorTitle.textContent = `Edit ${state.meta.name}`;
   editorStatus.textContent = '';
@@ -1102,6 +1151,7 @@ async function saveDocument() {
       lastDocModifiedAt = result.modifiedAt;
     }
     closeEditor(false);
+    pendingFrameScroll = editorFrameScroll;
     frame.src = `${docUrl()}?_t=${Date.now()}`;
     flash('Document saved');
   } catch {
@@ -1346,7 +1396,9 @@ let pdfDocument = null;
 let pdfPageObserver = null;
 const pdfPageStates = new Map();
 
-async function setupPdfMode(url = docUrl()) {
+// scrollTop: where to put the reader back once enough pages are laid out,
+// when reloading an updated PDF.
+async function setupPdfMode(url = docUrl(), scrollTop = 0) {
   const generation = ++pdfLoadGeneration;
   if (pdfPageObserver) pdfPageObserver.disconnect();
   pdfPageObserver = null;
@@ -1420,7 +1472,12 @@ async function setupPdfMode(url = docUrl()) {
       wirePdfOverlay(overlay);
       pdfPageStates.set(pageEl, { page, pageEl, canvas, viewport, renderTask: null, rendered: false, visible: false });
       pdfPageObserver.observe(pageEl);
+      if (scrollTop && pdfStage.scrollHeight >= scrollTop + pdfStage.clientHeight) {
+        pdfStage.scrollTop = scrollTop;
+        scrollTop = 0;
+      }
     }
+    if (scrollTop) pdfStage.scrollTop = scrollTop;
     pdfLoading.hidden = true;
     renderHighlights();
     applyPendingLocationHash();
