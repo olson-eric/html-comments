@@ -120,29 +120,68 @@ const editorStage = document.getElementById('editor-stage');
 const editorTitle = document.getElementById('editor-title');
 const editorStatus = document.getElementById('editor-status');
 const editorSource = document.getElementById('document-source');
-const editorPreview = document.getElementById('editor-preview');
+const editorFrame = document.getElementById('editor-frame');
 const editorSave = document.getElementById('editor-save');
 const editorCancel = document.getElementById('editor-cancel');
+const editorModeBtn = document.getElementById('editor-mode');
+const formatBar = document.getElementById('format-bar');
+const formatBlock = document.getElementById('format-block');
+const formatHint = document.getElementById('format-hint');
+const linkPopover = document.getElementById('link-popover');
 let editorOriginal = '';
 // Reading position when the editor opened, restored after a save reloads the frame.
 let editorFrameScroll = null;
 let editorModifiedAt = null;
-let previewTimer = null;
+// Visual editing state. Each editable block in the editor frame carries
+// data-hc-id (its index in richRanges, the source range it came from);
+// blocks split off it with Enter carry data-hc-from with the same index.
+// Only ranges in richDirty are rewritten on save.
+let richBase = '';
+let richRanges = [];
+let richDirty = new Set();
+let richActive = null;
+let richRange = null; // last selection in the frame, restored before a toolbar command
+let richLink = null; // { a, editing } while the caret is in a link
+let sourceMode = false;
+let statusTimer = null;
 
 editDocumentBtn.addEventListener('click', openEditor);
 editorCancel.addEventListener('click', () => closeEditor(true));
 editorSave.addEventListener('click', saveDocument);
-editorSource.addEventListener('input', () => {
-  updateEditorStatus();
-  clearTimeout(previewTimer);
-  previewTimer = setTimeout(renderEditorPreview, 120);
-});
+editorModeBtn.addEventListener('click', toggleSourceMode);
+editorSource.addEventListener('input', updateEditorStatus);
 editorSource.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     e.preventDefault();
     const start = editorSource.selectionStart;
     editorSource.setRangeText('  ', start, editorSource.selectionEnd, 'end');
     editorSource.dispatchEvent(new Event('input'));
+  }
+});
+formatBar.addEventListener('mousedown', (e) => {
+  // Keep the selection in the document when a format button is pressed.
+  if (e.target.closest('button')) e.preventDefault();
+});
+formatBar.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-format]');
+  if (btn) applyFormat(btn.dataset.format);
+});
+formatBlock.addEventListener('change', () => retypeBlock(formatBlock.value));
+linkPopover.addEventListener('mousedown', (e) => {
+  if (e.target.closest('button')) e.preventDefault();
+});
+linkPopover.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-link]');
+  if (btn) linkAction(btn.dataset.link);
+});
+linkPopover.addEventListener('keydown', (e) => {
+  if (!e.target.matches('input')) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    linkAction('apply');
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    linkAction('cancel');
   }
 });
 document.addEventListener('keydown', (e) => {
@@ -152,7 +191,7 @@ document.addEventListener('keydown', (e) => {
   }
 });
 window.addEventListener('beforeunload', (e) => {
-  if (editorStage.hidden || editorSource.value === editorOriginal) return;
+  if (editorStage.hidden || currentSource() === editorOriginal) return;
   e.preventDefault();
   e.returnValue = '';
 });
@@ -1052,25 +1091,29 @@ async function openEditor() {
   popover.hidden = true;
   frame.hidden = true;
   editorStage.hidden = false;
-  renderEditorPreview();
-  editorSource.focus();
+  setSourceMode(false);
+  loadRichEditor(editorOriginal, editorFrameScroll && editorFrameScroll.scrollY);
   editDocumentBtn.disabled = false;
 }
 
 function closeEditor(confirmDiscard) {
   if (editorStage.hidden) return;
-  if (confirmDiscard && editorSource.value !== editorOriginal && !window.confirm('Discard your unsaved changes?')) return;
-  clearTimeout(previewTimer);
+  if (confirmDiscard && currentSource() !== editorOriginal && !window.confirm('Discard your unsaved changes?')) return;
+  clearTimeout(statusTimer);
+  hideLinkPopover();
   editorStage.hidden = true;
   frame.hidden = false;
-  editorPreview.srcdoc = '';
+  editorFrame.onload = null;
+  editorFrame.srcdoc = '';
+  richActive = null;
   editorStatus.textContent = '';
   editorStatus.classList.remove('editor-error');
 }
 
 function updateEditorStatus() {
+  clearTimeout(statusTimer);
   editorStatus.classList.remove('editor-error');
-  editorStatus.textContent = editorSource.value === editorOriginal ? '' : 'Unsaved changes';
+  editorStatus.textContent = currentSource() === editorOriginal ? '' : 'Unsaved changes';
 }
 
 function rawDirectoryUrl() {
@@ -1087,7 +1130,7 @@ function withPreviewBase(source) {
   return `${base}${source}`;
 }
 
-function markdownPreviewDocument(source) {
+function markdownEditorDocument(source) {
   return `<!doctype html><html><head><meta charset="utf-8"><base href="${escapeHtml(rawDirectoryUrl())}"><style>
     body { max-width: 840px; margin: 0 auto; padding: 2.5rem 2rem 4rem; color: #1f2328; background: #fff; font: 16px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
     h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.4em 0 0.5em; }
@@ -1099,19 +1142,441 @@ function markdownPreviewDocument(source) {
     pre { overflow-x: auto; padding: .8em 1em; border-radius: 8px; background: #f6f8fa; }
     pre code { padding: 0; background: none; } blockquote { border-left: 4px solid #d8dee4; padding-left: 1em; color: #59636e; }
     table { border-collapse: collapse; } th, td { border: 1px solid #d8dee4; padding: .35em .8em; text-align: left; }
-  </style></head><body>${renderMarkdown(source, { breaks: false, headingIds: true })}</body></html>`;
+  </style></head><body>${renderMarkdown(source, { breaks: false, headingIds: true, sourceMap: true })}</body></html>`;
 }
 
-function renderEditorPreview() {
-  if (editorStage.hidden) return;
-  editorPreview.srcdoc = state.meta.kind === 'markdown'
-    ? markdownPreviewDocument(editorSource.value)
-    : withPreviewBase(editorSource.value);
+// ---- Visual editor ----
+
+const BLOCK_TYPES = [['p', 'Paragraph'], ['h1', 'Heading 1'], ['h2', 'Heading 2'], ['h3', 'Heading 3'], ['blockquote', 'Quote']];
+const BLOCK_LABELS = { li: 'List item', td: 'Table cell', th: 'Table header', h4: 'Heading 4', h5: 'Heading 5', h6: 'Heading 6', dt: 'Term', dd: 'Definition', caption: 'Caption', figcaption: 'Caption' };
+const NO_SPLIT = new Set(['td', 'th', 'caption', 'figcaption']);
+const RICH_STYLE = `
+  [data-hc-id], [data-hc-from] { outline: 1px solid transparent; outline-offset: 3px; border-radius: 3px; cursor: text; }
+  [data-hc-id]:hover, [data-hc-from]:hover { outline-color: rgba(37, 99, 235, 0.35); }
+  [data-hc-id]:focus, [data-hc-from]:focus, .hc-edit-active, .hc-edit-active:hover { outline: 2px solid #2563eb; }
+`;
+
+function editorDocument() {
+  return editorFrame.contentDocument;
+}
+
+function loadRichEditor(source, scrollY) {
+  richBase = source;
+  richDirty = new Set();
+  richActive = null;
+  richRange = null;
+  hideLinkPopover();
+  updateFormatBar();
+  editorFrame.onload = () => setupRichEditor(scrollY);
+  if (state.meta.kind === 'markdown') {
+    richRanges = [];
+    editorFrame.srcdoc = markdownEditorDocument(source);
+  } else {
+    richRanges = RichEdit.htmlBlocks(source);
+    editorFrame.srcdoc = withPreviewBase(RichEdit.annotateHtml(source, richRanges));
+  }
+}
+
+function setupRichEditor(scrollY) {
+  const doc = editorDocument();
+  if (!doc || !doc.body) return;
+  if (state.meta.kind === 'markdown') {
+    doc.querySelectorAll('[data-src-lines]').forEach((el) => {
+      const [start, end] = el.dataset.srcLines.split('-').map(Number);
+      el.dataset.hcId = richRanges.push({ start, end }) - 1;
+      el.removeAttribute('data-src-lines');
+    });
+  }
+  const style = doc.createElement('style');
+  style.textContent = RICH_STYLE;
+  (doc.head || doc.body).appendChild(style);
+  doc.querySelectorAll('[data-hc-id]').forEach((el) => { el.contentEditable = 'true'; });
+  doc.execCommand('styleWithCSS', false, false);
+  // Links never navigate the editor; the link popover opens them instead.
+  doc.addEventListener('click', (e) => {
+    if (e.target.closest && e.target.closest('a[href]')) e.preventDefault();
+  }, true);
+  doc.addEventListener('focusin', (e) => setActiveBlock(blockOf(e.target)));
+  doc.addEventListener('input', (e) => {
+    const block = blockOf(e.target);
+    if (block) markDirty(block);
+  });
+  doc.addEventListener('keydown', onEditorKeydown);
+  doc.addEventListener('paste', onEditorPaste);
+  doc.addEventListener('selectionchange', onEditorSelection);
+  doc.defaultView.addEventListener('scroll', positionLinkPopover);
+  if (scrollY) doc.defaultView.scrollTo(0, scrollY);
+}
+
+function blockOf(node) {
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  return el && el.closest ? el.closest('[data-hc-id], [data-hc-from]') : null;
+}
+
+function blockId(el) {
+  return el.dataset.hcId != null ? el.dataset.hcId : el.dataset.hcFrom;
+}
+
+function markDirty(block) {
+  richDirty.add(blockId(block));
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(updateEditorStatus, 150);
+}
+
+// The source as it stands: the source text in source mode, otherwise the
+// loaded source with each changed block written back over its own range.
+function currentSource() {
+  if (sourceMode) return editorSource.value;
+  const doc = editorDocument();
+  if (!doc || !richDirty.size) return richBase;
+  const markdown = state.meta.kind === 'markdown';
+  const edits = [...richDirty].map((id) => ({
+    range: richRanges[id],
+    blocks: Array.from(doc.querySelectorAll(`[data-hc-id="${id}"], [data-hc-from="${id}"]`), (el) => ({
+      tag: el.tagName.toLowerCase(),
+      content: markdown ? RichEdit.blockMarkdown(el) : RichEdit.blockHtml(el),
+    })),
+  }));
+  return markdown ? RichEdit.applyMarkdownEdits(richBase, edits) : RichEdit.applyHtmlEdits(richBase, edits);
+}
+
+function setSourceMode(on) {
+  sourceMode = on;
+  editorModeBtn.setAttribute('aria-pressed', String(on));
+  editorSource.hidden = !on;
+  editorFrame.hidden = on;
+  formatBar.hidden = on;
+  hideLinkPopover();
+}
+
+function toggleSourceMode() {
+  if (!sourceMode) {
+    editorSource.value = currentSource();
+    setSourceMode(true);
+    editorSource.focus();
+  } else {
+    setSourceMode(false);
+    loadRichEditor(editorSource.value);
+  }
+  updateEditorStatus();
+}
+
+function setActiveBlock(el) {
+  if (richActive && richActive !== el) richActive.classList.remove('hc-edit-active');
+  richActive = el || null;
+  if (el) el.classList.add('hc-edit-active');
+  updateFormatBar();
+}
+
+function updateFormatBar() {
+  const tag = richActive && richActive.tagName.toLowerCase();
+  let types = [['', 'Block type']];
+  if (tag) types = BLOCK_TYPES.some(([t]) => t === tag) ? BLOCK_TYPES : [[tag, BLOCK_LABELS[tag] || tag]];
+  formatBlock.innerHTML = types.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+  formatBlock.value = tag || '';
+  formatBlock.disabled = types.length < 2;
+  formatBar.querySelectorAll('button').forEach((b) => { b.disabled = !richActive; });
+  formatHint.textContent = richActive ? 'Select text to format' : 'Click a heading, paragraph, or list item to edit it';
+}
+
+function retypeBlock(tag) {
+  const el = richActive;
+  if (!el || !tag || el.tagName.toLowerCase() === tag) return;
+  const next = el.ownerDocument.createElement(tag);
+  for (const attr of el.attributes) next.setAttribute(attr.name, attr.value);
+  next.append(...el.childNodes);
+  el.replaceWith(next);
+  markDirty(next);
+  next.focus();
+  placeCaret(next, Infinity);
+}
+
+function textNodes(el) {
+  const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  return nodes;
+}
+
+function placeCaret(el, offset) {
+  const doc = el.ownerDocument;
+  const r = doc.createRange();
+  r.selectNodeContents(el);
+  r.collapse(true);
+  for (const node of textNodes(el)) {
+    if (offset <= node.nodeValue.length) {
+      r.setStart(node, offset);
+      r.collapse(true);
+      break;
+    }
+    offset -= node.nodeValue.length;
+    r.setStart(node, node.nodeValue.length);
+    r.collapse(true);
+  }
+  const sel = doc.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
+function caretOffset(block, sel) {
+  const r = sel.getRangeAt(0);
+  const pre = block.ownerDocument.createRange();
+  pre.selectNodeContents(block);
+  pre.setEnd(r.startContainer, r.startOffset);
+  return pre.toString().length;
+}
+
+function neighborBlock(block, dir) {
+  const all = Array.from(block.ownerDocument.querySelectorAll('[data-hc-id], [data-hc-from]'));
+  return all[all.indexOf(block) + dir] || null;
+}
+
+function onEditorKeydown(e) {
+  const mod = e.metaKey || e.ctrlKey;
+  const key = e.key.toLowerCase();
+  if (mod && key === 's') {
+    e.preventDefault();
+    saveDocument();
+    return;
+  }
+  if (e.key === 'Escape') hideLinkPopover();
+  const block = blockOf(e.target);
+  if (!block) return;
+  if (mod && key === 'k') {
+    e.preventDefault();
+    applyFormat('link');
+    return;
+  }
+  if (e.key === 'Enter') {
+    // Blocks map to source ranges, so Enter makes a new block instead of a line break.
+    e.preventDefault();
+    if (!e.shiftKey && !NO_SPLIT.has(block.tagName.toLowerCase())) splitBlock(block);
+    return;
+  }
+  const sel = block.ownerDocument.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return;
+  const offset = caretOffset(block, sel);
+  if (e.key === 'Backspace' && offset === 0) {
+    const prev = neighborBlock(block, -1);
+    if (prev && !NO_SPLIT.has(block.tagName.toLowerCase()) && !NO_SPLIT.has(prev.tagName.toLowerCase())) {
+      e.preventDefault();
+      joinBlocks(prev, block);
+    }
+  } else if (e.key === 'ArrowUp' && offset === 0) {
+    const prev = neighborBlock(block, -1);
+    if (prev) {
+      e.preventDefault();
+      prev.focus();
+      placeCaret(prev, Infinity);
+    }
+  } else if (e.key === 'ArrowDown' && offset === block.textContent.length) {
+    const next = neighborBlock(block, 1);
+    if (next) {
+      e.preventDefault();
+      next.focus();
+      placeCaret(next, 0);
+    }
+  }
+}
+
+function splitBlock(block) {
+  const doc = block.ownerDocument;
+  const sel = doc.getSelection();
+  if (!sel.rangeCount) return;
+  const r = sel.getRangeAt(0);
+  r.deleteContents();
+  const tail = doc.createRange();
+  tail.selectNodeContents(block);
+  tail.setStart(r.startContainer, r.startOffset);
+  const rest = tail.extractContents();
+  const tag = block.tagName.toLowerCase();
+  const next = doc.createElement(/^h[1-6]$/.test(tag) ? 'p' : tag);
+  next.dataset.hcFrom = blockId(block);
+  next.contentEditable = 'true';
+  next.append(rest);
+  // An empty block needs a <br> to keep its height and take the caret.
+  if (!next.textContent) next.innerHTML = '<br>';
+  if (!block.textContent) block.innerHTML = '<br>';
+  block.after(next);
+  markDirty(block);
+  next.focus();
+  placeCaret(next, 0);
+}
+
+function joinBlocks(prev, block) {
+  const caret = prev.textContent.length;
+  if (!prev.textContent) prev.textContent = '';
+  const moved = Array.from(block.childNodes).filter((n) => !(n.nodeName === 'BR' && !block.textContent));
+  prev.append(...moved);
+  markDirty(prev);
+  markDirty(block);
+  block.remove();
+  if (!prev.textContent) prev.innerHTML = '<br>';
+  prev.focus();
+  placeCaret(prev, caret);
+}
+
+function onEditorPaste(e) {
+  const block = blockOf(e.target);
+  if (!block) return;
+  // Plain text only, so formatting copied from other apps never reaches the file.
+  e.preventDefault();
+  const text = e.clipboardData.getData('text/plain').replace(/\s*\n\s*/g, ' ');
+  const doc = block.ownerDocument;
+  const sel = doc.getSelection();
+  if (!sel.isCollapsed && /^(https?:\/\/|mailto:)\S+$/.test(text.trim())) {
+    // A URL pasted over selected text links it.
+    const a = wrapLink(doc, text.trim());
+    if (a) showLinkPopover(a, false);
+  } else {
+    doc.execCommand('insertText', false, text);
+  }
+  markDirty(block);
+}
+
+function linkAt(node) {
+  const el = node && (node.nodeType === 1 ? node : node.parentElement);
+  const a = el && el.closest ? el.closest('a') : null;
+  return a && blockOf(a) ? a : null;
+}
+
+function onEditorSelection() {
+  const doc = editorDocument();
+  const sel = doc && doc.getSelection();
+  if (!sel || !sel.rangeCount || !blockOf(sel.anchorNode)) return;
+  richRange = sel.getRangeAt(0).cloneRange();
+  const a = linkAt(sel.anchorNode);
+  if (richLink && richLink.editing) {
+    if (a === richLink.a) return;
+    linkAction('cancel');
+  }
+  if (a !== (richLink && richLink.a)) {
+    if (a) showLinkPopover(a, false);
+    else hideLinkPopover();
+  }
+}
+
+function applyFormat(cmd) {
+  const doc = editorDocument();
+  const block = richActive;
+  if (!doc || !block || !block.isConnected) return;
+  const sel = doc.getSelection();
+  if (doc.activeElement !== block) {
+    block.focus();
+    if (richRange && block.contains(richRange.startContainer)) {
+      sel.removeAllRanges();
+      sel.addRange(richRange);
+    }
+  }
+  if (cmd === 'link') {
+    const existing = sel.rangeCount && linkAt(sel.anchorNode);
+    if (existing) return showLinkPopover(existing, true);
+  }
+  if (!sel.rangeCount || sel.isCollapsed || !block.contains(sel.anchorNode) || !block.contains(sel.focusNode)) {
+    formatHint.textContent = 'Select some text first';
+    return;
+  }
+  if (cmd === 'link') {
+    const a = wrapLink(doc, '');
+    if (a) showLinkPopover(a, true);
+    return;
+  }
+  if (cmd === 'code') {
+    const r = sel.getRangeAt(0);
+    const code = doc.createElement('code');
+    code.textContent = r.toString();
+    r.deleteContents();
+    r.insertNode(code);
+  } else {
+    doc.execCommand(cmd);
+  }
+  markDirty(block);
+}
+
+function wrapLink(doc, href) {
+  doc.execCommand('createLink', false, '__hc_new_link__');
+  const a = doc.querySelector('a[href="__hc_new_link__"]');
+  if (a) a.setAttribute('href', href);
+  return a;
+}
+
+function showLinkPopover(a, editing) {
+  richLink = a ? { a, editing } : null;
+  if (!a) {
+    linkPopover.hidden = true;
+    linkPopover.innerHTML = '';
+    return;
+  }
+  const href = a.getAttribute('href') || '';
+  linkPopover.innerHTML = editing
+    ? `<input type="text" aria-label="Link address" placeholder="Paste a URL or a document path" value="${escapeHtml(href)}"><button type="button" data-link="apply">Apply</button>`
+    : `<span class="link-popover-url" title="${escapeHtml(href)}">${escapeHtml(href)}</span><button type="button" data-link="open">Open</button><button type="button" data-link="edit">Edit</button><button type="button" data-link="remove" class="danger">Remove</button>`;
+  linkPopover.hidden = false;
+  positionLinkPopover();
+  const input = linkPopover.querySelector('input');
+  if (input) {
+    input.focus();
+    input.select();
+  }
+}
+
+function hideLinkPopover() {
+  showLinkPopover(null);
+}
+
+function positionLinkPopover() {
+  if (!richLink) return;
+  if (!richLink.a.isConnected) return hideLinkPopover();
+  const stage = editorStage.getBoundingClientRect();
+  const fr = editorFrame.getBoundingClientRect();
+  const r = richLink.a.getBoundingClientRect();
+  let top = fr.top - stage.top + r.bottom + 6;
+  // Open above the link when there is no room below it.
+  if (top + linkPopover.offsetHeight > stage.height) top = fr.top - stage.top + r.top - linkPopover.offsetHeight - 6;
+  const left = Math.max(8, Math.min(fr.left - stage.left + r.left, stage.width - linkPopover.offsetWidth - 8));
+  linkPopover.style.top = `${top}px`;
+  linkPopover.style.left = `${left}px`;
+}
+
+function linkAction(act) {
+  if (!richLink) return;
+  const { a } = richLink;
+  const block = blockOf(a);
+  if (act === 'edit') return showLinkPopover(a, true);
+  if (act === 'open') {
+    const url = a.href; // resolved against the document's own folder
+    const docPath = documentPathForLink(url, location.origin, appRoot, treeCache);
+    const target = docPath ? new URL(`v/${encodePath(docPath)}${new URL(url).hash}`, document.baseURI).toString() : url;
+    window.open(target, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  const unwrap = () => a.replaceWith(...a.childNodes);
+  if (act === 'apply') {
+    const href = linkPopover.querySelector('input').value.trim();
+    if (href) a.setAttribute('href', href);
+    else unwrap();
+  }
+  if (act === 'cancel' && !a.getAttribute('href')) unwrap();
+  if (act === 'remove') unwrap();
+  hideLinkPopover();
+  if (!block) return;
+  markDirty(block);
+  block.focus();
+  if (a.isConnected) {
+    // Put the caret right after the link, which keeps the popover closed.
+    const r = block.ownerDocument.createRange();
+    r.setStartAfter(a);
+    r.collapse(true);
+    const sel = block.ownerDocument.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
 }
 
 async function saveDocument() {
   if (editorStage.hidden || editorSave.disabled) return;
-  if (!editorSource.value.length) {
+  const source = currentSource();
+  if (!source.length) {
     editorStatus.textContent = 'Document cannot be empty';
     editorStatus.classList.add('editor-error');
     return;
@@ -1127,7 +1592,7 @@ async function saveDocument() {
         'Content-Type': 'text/plain; charset=utf-8',
         'X-Document-Modified-At': editorModifiedAt,
       },
-      body: editorSource.value,
+      body: source,
     });
     const result = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -1137,7 +1602,7 @@ async function saveDocument() {
       editorStatus.classList.add('editor-error');
       return;
     }
-    editorOriginal = editorSource.value;
+    editorOriginal = source;
     editorModifiedAt = result.modifiedAt;
     const metaRes = await fetch(`api/file${apiQS}`);
     if (metaRes.ok) {
