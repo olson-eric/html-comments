@@ -118,3 +118,12 @@ test('document fixture: realistic doc keeps list structure intact', () => {
   assert.ok(html.includes('<strong>Mocks must return referentially-stable values when the real hook memoizes.</strong>'));
   assert.ok(html.includes('<strong>Guard against infinite render loops with a render counter, not a timeout.</strong>'));
 });
+
+test('sourceMap marks top-level blocks with their source lines, past fenced code', () => {
+  assert.equal(
+    renderMarkdown('# T\n\npara\nwraps\n\n```\na\nb\n```\n\n- x\n- y\n  more\n\n> q', { breaks: false, sourceMap: true }),
+    '<h1 data-src-lines="0-0">T</h1><p data-src-lines="2-3">para wraps</p><pre><code>a\nb</code></pre>'
+      + '<ul><li data-src-lines="10-10">x</li><li data-src-lines="11-12">y more</li></ul><blockquote data-src-lines="14-14">q</blockquote>'
+  );
+  assert.equal(doc('para'), '<p>para</p>');
+});

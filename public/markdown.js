@@ -8,6 +8,10 @@
 //   lines are joined with a space (document style, used for .md files).
 //   opts.headingIds — when true, headings get GitHub-style slug ids so
 //   documents can be linked by section (needs doc-anchors.js).
+//   opts.sourceMap — when true, top-level headings, paragraphs, blockquotes,
+//   and simple list items get data-src-lines="first-last" (0-based source
+//   line numbers), so the visual editor can write an edited block back over
+//   exactly the lines it came from.
 (function (global) {
   'use strict';
 
@@ -44,10 +48,24 @@
     const slugger = opts && opts.headingIds && DocAnchors ? DocAnchors.createSlugger() : null;
 
     const codeBlocks = [];
-    text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-      const idx = codeBlocks.push({ lang, code: code.replace(/\n$/, '') }) - 1;
+    text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (match, lang, code) => {
+      const idx = codeBlocks.push({ lang, code: code.replace(/\n$/, ''), newlines: match.split('\n').length - 1 }) - 1;
       return `\x00CB${idx}\x00`;
     });
+
+    // Fenced code collapses to a one-line placeholder, so map each working
+    // line back to the source line it starts on.
+    let lineStart = null;
+    if (opts && opts.sourceMap) {
+      lineStart = [0];
+      for (const ln of text.split('\n')) {
+        let extra = 0;
+        ln.replace(/\x00CB(\d+)\x00/g, (_, k) => { extra += codeBlocks[+k].newlines; return ''; });
+        lineStart.push(lineStart[lineStart.length - 1] + 1 + extra);
+      }
+    }
+    const srcAttr = (top, first, last) =>
+      top && lineStart ? ` data-src-lines="${lineStart[first]}-${lineStart[last + 1] - 1}"` : '';
 
     const inlineCodes = [];
     text = text.replace(/`([^`\n]+)`/g, (_, code) => {
@@ -100,7 +118,7 @@
     // Indented lines are continuation content of the current item (wrapped
     // text, nested lists, code blocks); blank lines only end the list when the
     // next content line doesn't belong to it.
-    function parseList(lines, i) {
+    function parseList(lines, i, top) {
       const ordered = OL_ITEM.test(lines[i]);
       const itemRe = ordered ? OL_ITEM : UL_ITEM;
       const items = [];
@@ -112,7 +130,7 @@
           if (ordered && !items.length) start = parseInt(m[1], 10) || 1;
           // Continuation lines are dedented by the marker width ("- " = 2,
           // "12. " = 4) so nested structures parse at the right level.
-          items.push({ indent: ln.length - m[ordered ? 2 : 1].length, lines: [m[ordered ? 2 : 1]] });
+          items.push({ indent: ln.length - m[ordered ? 2 : 1].length, lines: [m[ordered ? 2 : 1]], start: i, last: i });
           i++;
           continue;
         }
@@ -130,6 +148,7 @@
         if (/^\s+\S/.test(ln)) {
           const item = items[items.length - 1];
           item.lines.push(ln.replace(new RegExp(`^\\s{1,${item.indent}}`), ''));
+          item.last = i;
           i++;
           continue;
         }
@@ -145,7 +164,7 @@
             break;
           }
         }
-        if (firstBreak === -1) return `<li>${inlineBlock(content)}</li>`;
+        if (firstBreak === -1) return `<li${srcAttr(top, item.start, item.last)}>${inlineBlock(content)}</li>`;
         // Tight item (nested block follows the text directly): bare lead text.
         // Loose item (blank line inside): let renderBlocks wrap paragraphs.
         if (content[firstBreak].trim() !== '') {
@@ -158,7 +177,7 @@
       return { html: `<${tag}${startAttr}>${lis.join('')}</${tag}>`, next: i };
     }
 
-    function renderBlocks(lines) {
+    function renderBlocks(lines, top) {
       const out = [];
       let i = 0;
       while (i < lines.length) {
@@ -177,7 +196,7 @@
           const inner = renderInline(m[2]);
           const id = slugger && slugger.slug(plainText(inner));
           const idAttr = id ? ` id="${escapeHtml(id)}"` : '';
-          out.push(`<h${m[1].length}${idAttr}>${inner}</h${m[1].length}>`);
+          out.push(`<h${m[1].length}${idAttr}${srcAttr(top, i, i)}>${inner}</h${m[1].length}>`);
           i++;
           continue;
         }
@@ -189,17 +208,18 @@
         }
 
         if (/^>\s?/.test(line)) {
+          const first = i;
           const block = [];
           while (i < lines.length && /^>\s?/.test(lines[i])) {
             block.push(lines[i].replace(/^>\s?/, ''));
             i++;
           }
-          out.push(`<blockquote>${inlineBlock(block)}</blockquote>`);
+          out.push(`<blockquote${srcAttr(top, first, i - 1)}>${inlineBlock(block)}</blockquote>`);
           continue;
         }
 
         if (UL_ITEM.test(line) || OL_ITEM.test(line)) {
-          const list = parseList(lines, i);
+          const list = parseList(lines, i, top);
           out.push(list.html);
           i = list.next;
           continue;
@@ -226,18 +246,19 @@
           continue;
         }
 
+        const first = i;
         const para = [];
         while (i < lines.length && lines[i].trim() !== '' && !isBlockStart(lines[i])) {
           para.push(lines[i]);
           i++;
         }
-        out.push(`<p>${inlineBlock(para)}</p>`);
+        out.push(`<p${srcAttr(top, first, i - 1)}>${inlineBlock(para)}</p>`);
       }
 
       return out.join('');
     }
 
-    return renderBlocks(text.split('\n'));
+    return renderBlocks(text.split('\n'), true);
   }
 
   if (typeof module !== 'undefined' && module.exports) {

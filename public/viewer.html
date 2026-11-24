@@ -89,20 +89,25 @@
               <span id="editor-status" class="muted" role="status"></span>
             </div>
             <div class="editor-actions">
+              <button id="editor-mode" class="secondary" type="button" aria-pressed="false" title="Edit the raw source, for tables, code blocks, and other markup">Source</button>
               <button id="editor-cancel" class="secondary" type="button">Cancel</button>
               <button id="editor-save" type="button">Save</button>
             </div>
           </div>
-          <div class="editor-panels">
-            <label class="editor-panel editor-source-panel">
-              <span>Source</span>
-              <textarea id="document-source" spellcheck="false" aria-label="Document source"></textarea>
-            </label>
-            <section class="editor-panel editor-preview-panel" aria-label="Rendered preview">
-              <span>Preview</span>
-              <iframe id="editor-preview" sandbox="allow-same-origin" title="Rendered preview"></iframe>
-            </section>
+          <div id="format-bar" class="format-bar" role="toolbar" aria-label="Formatting">
+            <select id="format-block" aria-label="Block type" disabled></select>
+            <span class="format-sep"></span>
+            <button type="button" data-format="bold" aria-label="Bold" title="Bold (Ctrl+B)"><b>B</b></button>
+            <button type="button" data-format="italic" aria-label="Italic" title="Italic (Ctrl+I)"><i>I</i></button>
+            <button type="button" data-format="code" aria-label="Code" title="Code" class="format-code">&lt;/&gt;</button>
+            <button type="button" data-format="link" aria-label="Link" title="Link (Ctrl+K)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+            </button>
+            <span id="format-hint" class="format-hint">Click a heading, paragraph, or list item to edit it</span>
           </div>
+          <iframe id="editor-frame" sandbox="allow-same-origin" title="Document editor"></iframe>
+          <textarea id="document-source" spellcheck="false" aria-label="Document source" hidden></textarea>
+          <div id="link-popover" class="link-popover" hidden></div>
         </div>
         <div id="image-stage" class="image-stage" hidden>
           <div class="image-wrap">
@@ -172,6 +177,7 @@
     <script src="theme.js"></script>
     <script src="doc-anchors.js"></script>
     <script src="markdown.js"></script>
+    <script src="rich-edit.js"></script>
     <script src="anchor-resolver.js"></script>
     <script src="viewer-links.js"></script>
     <script src="viewer.js"></script>
